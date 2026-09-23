@@ -1,0 +1,45 @@
+# Defaults for comfy-agent. Every value here can be overridden per run
+# from the CLI flags or the WebUI controls.
+
+comfyui:
+  url: http://10.0.0.15:8188
+  workflow: workflows/anima_flow.json
+  timeout_s: 600          # max wait for one generation
+  poll_interval_s: 2
+
+openrouter:
+  base_url: https://openrouter.ai/api/v1
+  default_model: ""       # empty = choose each run (CLI prompts, WebUI dropdown)
+  temperature: 0.8
+
+judge:
+  model: jev-latest
+  max_attempts: 5
+  # Each dimension is normalized to 0..1; all must reach their threshold to pass.
+  thresholds:
+    fidelity: 0.67
+    format: 0.67
+    completeness: 0.67
+    negative: 0.67
+
+prompt:
+  # Always prepended to the generated positive prompt (quality tags, LoRA triggers...).
+  positive_prefix: "masterpiece, best quality, score_7, score_8, score_9, year 2025, year 2026"
+  # Always merged into the generated negative prompt.
+  negative_base: "worst quality, low quality, score_1, score_2, score_3, score_4, score_5, score_6, artist name, blurry, jpeg artifacts, chromatic aberration, bad anatomy, bad hands, censored, mosaic censoring"
+
+generation:
+  width: 832
+  height: 1216
+  batch_size: 1
+  seed: -1                # -1 = random each run
+  steps: 35
+  cfg: 5.5
+  sampler_name: er_sde
+  scheduler: beta
+  denoise: 0.9            # img2img only; txt2img always uses 1.0
+  filename_prefix: comfy_agent
+  # LoRA strengths keyed by lora_name; unlisted LoRAs keep the workflow value.
+  lora_strengths: {}
+
+runs_dir: runs
