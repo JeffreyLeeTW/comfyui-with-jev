@@ -81,3 +81,4 @@ def test_make_writer_picks_provider(settings):
     assert isinstance(make_writer(replace(s, llm_provider="ollama")), OllamaClient)
     with pytest.raises(ValueError):
         make_writer(s, "gpt")
+

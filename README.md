@@ -57,13 +57,19 @@ uv run comfy-agent run --idea "..." --no-render
 
 # 指定內容分級（WebUI 用「內容分級」選項）：sfw 或 nsfw，不加就不指定
 uv run comfy-agent run --idea "..." --rating sfw
+
+# Jev 模式：on（預設）／off（產生一次就生圖，Jev 只評分供參考）／ab（兩種各生一組、同 seed 對照）
+uv run comfy-agent run --idea "..." --judge ab --report
+
+# 把任一次的紀錄匯出成 HTML 報告（存到 runs/reports/）
+uv run comfy-agent report runs/20260924-120000.json
 ```
 
 `run` 可以用的參數（沒有指定的就用 `config.yaml` 的值）：
 
 | 類別 | 參數 |
 | --- | --- |
-| 模型／流程 | `--provider/-p`（`openrouter`／`ollama`）, `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`） |
+| 模型／流程 | `--provider/-p`（`openrouter`／`ollama`）, `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`）, `--judge`（`on`／`off`／`ab`）, `--report`（另外匯出 HTML 報告） |
 | Jev 門檻（0–1） | `--t-fidelity`, `--t-format`, `--t-completeness`, `--t-negative` |
 | 生圖 | `--width`, `--height`, `--batch-size`, `--seed`（-1 = 隨機）, `--steps`, `--cfg`, `--sampler`, `--scheduler`, `--denoise`（只有 img2img 用得到） |
 | LoRA | `--lora name=strength`（可以重複指定多個） |
@@ -78,8 +84,11 @@ uv run comfy-agent webui --port 8000
 
 - 「Prompt 產生器」可以切換 OpenRouter／Ollama，模型清單會跟著更新。
 - 模型下拉選單會依有沒有上傳圖片，自動只列出能看圖的模型；↻ 可以重新整理清單。
+- 「Jev 評審」可選使用 Jev／不用 Jev／A-B 對照，說明見下方〈Jev 模式〉。
 - 「Jev 門檻」和「生圖參數」兩個折疊區塊，可以調整每次執行的設定。
+- 「連線設定」可以改 ComfyUI 和 Ollama 的 IP 與 port。按「儲存並測試連線」會寫入 `.env` 的 `COMFYUI_URL`／`OLLAMA_URL`（優先於 `config.yaml`，CLI 也會讀），並立刻測試連線；下一次執行就生效，不用重開。
 - 右側會即時顯示每一輪的分數、最後送出的 prompt，以及直接從 server 讀取的結果圖。
+- 跑完後按「匯出報告（HTML）」可以下載這次的報告。
 
 ## 設定：`config.yaml`
 
@@ -113,6 +122,20 @@ uv run comfy-agent webui --port 8000
 
 > 門檻的預設值只是起點。建議先跑幾次，看 `runs/` 裡的實際分數分布再調整。
 
+### Jev 模式
+
+| 模式 | 流程 | Jev 花費 |
+| --- | --- | --- |
+| 使用 Jev（`on`，預設） | 上面描述的評分／重寫迴圈 | 每一版 1 次 |
+| 不用 Jev（`off`） | 產生 1 次就送去生圖。Jev 仍會評 1 次分，只記錄、不影響流程；沒有 `TYPESAFE_API_KEY` 或評分失敗時就跳過 | 1 次 |
+| A-B 對照（`ab`） | 跑完 Jev 迴圈後，用**同一個 seed** 分別生「Jev 最後送出的版本」和「第 1 版」（也就是不用 Jev 時會送出的版本）。第 1 版就及格時兩組相同，只生一次圖 | 和 `on` 相同 |
+
+A-B 對照直接拿 Jev 迴圈的第 1 版當「無 Jev」組，兩組從同一個起點出發，差別只在有沒有經過 Jev 回饋重寫，而且不會多花 LLM 和 Jev 的額度。
+
+### 報告
+
+`runs/reports/<紀錄檔名>.html` 是單一 HTML 檔，內容有構想、參數、每一輪的分數與 prompt、最後的圖；A-B 對照時會左右並排，並附各面向的分數差異。圖片從 ComfyUI 的 `/view` 讀取，不會下載到本機，所以要連 VPN 才看得到。
+
 ## ComfyUI workflow
 
 Template 是 `workflows/anima_flow.json`，從 `example flow.json` 複製過來。程式會依節點的類型和連線找出要改的節點，不寫死節點 ID。每次執行時會做以下修改：
@@ -127,7 +150,7 @@ Template 是 `workflows/anima_flow.json`，從 `example flow.json` 複製過來�
 ## 輸出
 
 - **圖片**：只存在 server 的 `output/`，不會下載到本機。CLI 會印出 `/view` 連結，WebUI 則直接顯示。
-- **紀錄**：`runs/<時間>.json`，內容包括每一輪的 prompt、各面向的分數／信心值／等級、最後選用的是第幾輪、是否達標、生圖參數、seed 和 ComfyUI 的 prompt_id。模型拒絕時會多一個 `refused` 欄位記錄原因。
+- **紀錄**：`runs/<時間>.json`（`kind` 是 `run` 或 `compare`；`compare` 的兩組分別在 `with_jev`／`without_jev`），內容包括每一輪的 prompt、各面向的分數／信心值／等級、最後選用的是第幾輪、是否達標、生圖參數、seed 和 ComfyUI 的 prompt_id。模型拒絕時會多一個 `refused` 欄位記錄原因。
 - **拒絕紀錄**：`runs/refusals.jsonl`，每行一筆（時間、模型、txt2img／img2img、第幾輪、原因、構想）。`models` 指令和 WebUI 的模型選單會標出拒絕過幾次。
 
 ## 專案結構
@@ -145,6 +168,7 @@ src/comfy_agent/
   comfyui.py     修改 workflow、上傳圖片、送出並等待生圖
   pipeline.py    生成 → 評審 → 生圖的主流程，並寫出執行紀錄
   cli.py         CLI（typer）
+  report.py      把紀錄轉成 HTML 報告
   webui.py       WebUI（Gradio）
 tests/           單元測試（HTTP 全部 mock）
 ```

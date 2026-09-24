@@ -1,4 +1,4 @@
-"""Command line interface: comfy-agent run | models | check | webui."""
+"""Command line interface: comfy-agent run | models | check | report | webui."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 
 import typer
 
-from .config import PROVIDERS, RATINGS, load_settings
+from .config import JUDGE_MODES, PROVIDERS, RATINGS, load_settings
 from .llm import default_model, make_writer, resolve_provider
 from .openrouter import ModelInfo
 from .refusals import refusal_counts
@@ -126,6 +126,8 @@ def run(
     provider: ProviderOpt = None,
     model: Annotated[Optional[str], typer.Option("--model", "-m", help="Model id for the provider; omit to pick interactively")] = None,
     rating: Annotated[Optional[str], typer.Option("--rating", help="sfw | nsfw; omit to add no rating tags")] = None,
+    judge: Annotated[str, typer.Option("--judge", help="on = Jev loop | off = one draft, scored for reference | ab = both, same seed")] = "on",
+    report: Annotated[bool, typer.Option("--report", help="Also export an HTML report")] = False,
     max_attempts: Annotated[Optional[int], typer.Option("--max-attempts")] = None,
     t_fidelity: Annotated[Optional[float], typer.Option("--t-fidelity", help="Threshold 0..1")] = None,
     t_format: Annotated[Optional[float], typer.Option("--t-format")] = None,
@@ -144,7 +146,7 @@ def run(
     no_render: Annotated[bool, typer.Option("--no-render", help="Only generate and judge prompts")] = False,
     config: ConfigOpt = None,
 ) -> None:
-    """Idea -> LLM prompt (OpenRouter/Ollama) -> Jev judge (retry) -> ComfyUI."""
+    """Idea -> LLM prompt (OpenRouter/Ollama) -> Jev judge (retry, optional) -> ComfyUI."""
     from .pipeline import InputImage, build_pipeline
 
     if not idea.strip() and image is None:
@@ -152,6 +154,9 @@ def run(
     rating = rating.lower() if rating else None
     if rating is not None and rating not in RATINGS:
         raise typer.BadParameter(f"--rating must be one of: {', '.join(RATINGS)}")
+    judge = judge.lower()
+    if judge not in JUDGE_MODES:
+        raise typer.BadParameter(f"--judge must be one of: {', '.join(JUDGE_MODES)}")
     s = load_settings(config)
     provider = _provider(s, provider)
     model = model or default_model(s, provider) or _choose_model(s, provider, need_vision=image is not None)
@@ -173,35 +178,67 @@ def run(
                 typer.echo(f"positive: {e['positive']}\nnegative: {e['negative']}")
             case "judged":
                 v = e["attempt"].verdict
+                if v is None:
+                    return
                 for d in v.dimensions.values():
                     typer.secho(
                         f"  {d.name:<13} {d.value:.2f} / {d.threshold:.2f}  conf {d.confidence:.2f}",
                         fg="green" if d.passed else "red",
                     )
-                typer.secho("  PASS" if v.passed else "  FAIL -> feedback sent back", fg="green" if v.passed else "yellow")
+                if e["reference"]:
+                    typer.secho(f"  reference only ({'would pass' if v.passed else 'would fail'}); no retry", fg="cyan")
+                else:
+                    typer.secho("  PASS" if v.passed else "  FAIL -> feedback sent back", fg="green" if v.passed else "yellow")
+            case "warning":
+                typer.secho(f"  warning: {e['message']}", fg="yellow")
             case "refused":
                 typer.secho(f"\n{e['model']} refused on attempt {e['attempt']}; stopping (nothing rendered).", fg="red", bold=True)
                 typer.secho(f"  reason: {e['reason']}", fg="red")
             case "chosen":
-                if not e["passed"]:
+                if e["judge"] and not e["passed"]:
                     typer.secho(
                         f"\nNo attempt passed; using best attempt #{e['attempt'].number} (marked NOT PASSED)",
                         fg="yellow",
                     )
             case "rendering":
-                typer.echo(f"\nQueued in ComfyUI: prompt_id={e['prompt_id']} seed={e['seed']} - waiting...")
+                arm = {"with_jev": " [with Jev]", "without_jev": " [without Jev]"}.get(e["arm"], "")
+                typer.echo(f"\nQueued in ComfyUI{arm}: prompt_id={e['prompt_id']} seed={e['seed']} - waiting...")
 
-    result = build_pipeline(s, provider).run(
-        idea, model, InputImage.from_path(image) if image else None, gen, thresholds,
-        max_attempts, render=not no_render, on_event=on_event, rating=rating,
-    )
-    for img in result.images:
-        typer.secho(f"image on server: output/{img.subfolder + '/' if img.subfolder else ''}{img.filename}", fg="cyan")
-        typer.echo(f"  view: {img.url}")
+    pipeline = build_pipeline(s, provider)
+    args = (idea, model, InputImage.from_path(image) if image else None, gen, thresholds, max_attempts)
+    kwargs = dict(render=not no_render, on_event=on_event, rating=rating)
+    if judge == "ab":
+        result = pipeline.compare(*args, **kwargs)
+        arms = [("with Jev", result.with_jev), ("without Jev", result.without_jev)]
+        if result.identical:
+            typer.secho("\nFirst draft was the final prompt: both arms are identical (rendered once).", fg="cyan")
+    else:
+        result = pipeline.run(*args, **kwargs, use_judge=judge == "on")
+        arms = [("", result)]
+    for label, arm in arms:
+        for img in arm.images:
+            prefix = f"[{label}] " if label else ""
+            typer.secho(f"{prefix}image on server: output/{img.subfolder + '/' if img.subfolder else ''}{img.filename}", fg="cyan")
+            typer.echo(f"  view: {img.url}")
     typer.echo(f"log: {result.log_path}")
+    if report:
+        from .report import export_report
+
+        typer.echo(f"report: {export_report(result.log_path)}")
     if result.refused:
         typer.echo(f"refusal recorded in {s.runs_dir / 'refusals.jsonl'}")
         raise typer.Exit(1)
+
+
+@app.command("report")
+def report_cmd(
+    log: Annotated[Path, typer.Argument(help="Run log, e.g. runs/20260924-120000.json", exists=True, dir_okay=False)],
+    out_dir: Annotated[Optional[Path], typer.Option("--out", help="Output folder (default: <runs>/reports)")] = None,
+) -> None:
+    """Export a run log as an HTML report."""
+    from .report import export_report
+
+    typer.echo(export_report(log, out_dir))
 
 
 @app.command()

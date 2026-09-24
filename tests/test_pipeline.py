@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from conftest import BAD, GOOD, MID, FakeSystemOne, all_dims
 
 from comfy_agent.comfyui import OutputImage
@@ -133,3 +135,71 @@ def test_nsfw_rating_and_unset_rating(settings):
     r = p.run("a girl", "m:free")
     assert "nsfw" not in r.chosen.positive and "safe" in r.chosen.negative  # untouched
     assert "not specified" in fake.requests[1][0]["content_rating"]
+
+
+def test_without_jev_sends_first_draft_and_scores_for_reference(settings):
+    p, orc, comfy = make(settings, [all_dims(BAD)])
+    events = []
+    r = p.run("a girl", "m:free", max_attempts=5, use_judge=False, on_event=events.append)
+
+    assert len(orc.calls) == 1 and r.judge_mode == "off" and r.chosen.number == 1
+    assert r.chosen.verdict is not None and not r.passed and len(comfy.queued) == 1
+    assert [e["reference"] for e in events if e["type"] == "judged"] == [True]
+    log = json.loads(r.log_path.read_text())
+    assert log["kind"] == "run" and log["judge_mode"] == "off" and log["attempts"][0]["scores"]
+
+
+def test_without_jev_survives_missing_or_failing_judge(settings):
+    orc, comfy = FakeOpenRouter(), FakeComfy()
+    events = []
+    r = Pipeline(settings, orc, None, comfy).run("a girl", "m:free", use_judge=False, on_event=events.append)
+    assert r.chosen.verdict is None and len(comfy.queued) == 1
+    assert any(e["type"] == "warning" for e in events)
+
+    class Broken:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("quota")
+
+    r = Pipeline(settings, FakeOpenRouter(), Broken(), FakeComfy()).run("a girl", "m:free", use_judge=False)
+    assert r.chosen.verdict is None and r.images
+
+
+def test_jev_modes_require_a_judge(settings):
+    p = Pipeline(settings, FakeOpenRouter(), None, FakeComfy())
+    with pytest.raises(RuntimeError, match="TYPESAFE_API_KEY"):
+        p.run("a girl", "m:free")
+    with pytest.raises(RuntimeError, match="TYPESAFE_API_KEY"):
+        p.compare("a girl", "m:free")
+
+
+def test_compare_renders_both_arms_with_same_seed(settings):
+    p, orc, comfy = make(settings, [all_dims(BAD), all_dims(GOOD)])
+    events = []
+    r = p.compare("a girl", "m:free", on_event=events.append)
+
+    assert len(orc.calls) == 2 and not r.identical
+    assert r.with_jev.chosen.number == 2 and r.without_jev.chosen.number == 1
+    assert r.without_jev.judge_mode == "off" and r.without_jev.chosen.verdict is r.with_jev.attempts[0].verdict
+    assert len(comfy.queued) == 2
+    seeds = {wf["4"]["inputs"]["seed"] for wf in comfy.queued}
+    assert len(seeds) == 1 and r.with_jev.seed == r.without_jev.seed
+    assert "tag2" in comfy.queued[0]["6"]["inputs"]["text"] and "tag1" in comfy.queued[1]["6"]["inputs"]["text"]
+    assert [e["arm"] for e in events if e["type"] == "rendering"] == ["with_jev", "without_jev"]
+    log = json.loads(r.log_path.read_text())
+    assert log["kind"] == "compare" and log["with_jev"]["chosen_attempt"] == 2
+    assert log["without_jev"]["attempts"][0]["number"] == 1
+
+
+def test_compare_identical_when_first_draft_passes(settings):
+    p, orc, comfy = make(settings, [all_dims(GOOD)])
+    r = p.compare("a girl", "m:free")
+    assert r.identical and len(comfy.queued) == 1
+    assert r.without_jev.images == r.with_jev.images and r.without_jev.passed
+
+
+def test_compare_refusal_renders_nothing(settings):
+    orc, comfy = FakeOpenRouter(refuse_on=2), FakeComfy()
+    p = Pipeline(settings, orc, JevJudge(FakeSystemOne([all_dims(BAD)])), comfy)
+    r = p.compare("a girl", "m:free")
+    assert r.refused and comfy.queued == []
+    assert json.loads(r.log_path.read_text())["with_jev"]["refused"]
