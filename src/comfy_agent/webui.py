@@ -32,6 +32,7 @@ from .report import export_report
 SAMPLERS = ["er_sde", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "uni_pc"]
 SCHEDULERS = ["beta", "normal", "karras", "exponential", "sgm_uniform", "simple"]
 TABLE_HEADERS = ["#", *DIMENSIONS, "result", "positive"]
+MANUAL = "manual"  # extra WebUI mode next to the Jev modes: hand-written prompt, no LLM, no Jev
 
 
 def _provider_choices(lang: str) -> list[tuple[str, str]]:
@@ -47,7 +48,7 @@ def _style_choices(lang: str) -> list[tuple[str, str]]:
 
 
 def _judge_choices(lang: str) -> list[tuple[str, str]]:
-    return [(t(f"judge.{m}", lang), m) for m in JUDGE_MODES]
+    return [(t(f"judge.{m}", lang), m) for m in (*JUDGE_MODES, MANUAL)]
 
 
 def _model_label(provider: str, lang: str) -> str:
@@ -154,11 +155,15 @@ def build_app(settings: Settings) -> gr.Blocks:
         msg = f"{t('msg.saved_conn', lang)}\n\n{_check_endpoints(urls['comfyui'], urls['ollama'], lang)}"
         return msg, refresh_models(provider, image_path, current, lang)
 
-    def run(lang, idea, image_path, provider, model, rating, style, judge_mode, max_attempts, t_fid, t_fmt, t_comp, t_neg,
-            width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, loras_text):
-        if not (idea or "").strip() and not image_path:
+    def run(lang, idea, image_path, provider, model, rating, style, judge_mode, manual_pos, manual_neg, max_attempts,
+            t_fid, t_fmt, t_comp, t_neg, width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise,
+            loras_text):
+        manual = judge_mode == MANUAL
+        if manual and not (manual_pos or "").strip():
+            raise gr.Error(t("msg.need_positive", lang))
+        if not manual and not (idea or "").strip() and not image_path:
             raise gr.Error(t("msg.need_input", lang))
-        if not model:
+        if not manual and not model:
             raise gr.Error(t("msg.need_model", lang))
 
         s = state["settings"]
@@ -176,6 +181,9 @@ def build_app(settings: Settings) -> gr.Blocks:
         def worker():
             try:
                 pipeline = build_pipeline(s, provider)
+                if manual:
+                    outcome["result"] = pipeline.manual(manual_pos, manual_neg or "", image, gen, events.put)
+                    return
                 args = (idea or "", model, image, gen, thresholds, int(max_attempts))
                 kwargs = dict(on_event=events.put, rating=rating or None, style=style)
                 outcome["result"] = (
@@ -190,8 +198,8 @@ def build_app(settings: Settings) -> gr.Blocks:
         threading.Thread(target=worker, daemon=True).start()
 
         rows: list[list] = []
-        status = t("msg.starting", lang)
-        pos = neg = ""
+        status = t("msg.manual" if manual else "msg.starting", lang)
+        pos, neg = (manual_pos, manual_neg or "") if manual else ("", "")
         while (e := events.get()) is not None:
             match e["type"]:
                 case "generating":
@@ -263,7 +271,7 @@ def build_app(settings: Settings) -> gr.Blocks:
                 idea = gr.Textbox(label=L("ui.idea"), lines=4, placeholder=L("ui.idea_placeholder"))
                 image = gr.Image(label=L("ui.image"), type="filepath")
                 provider = gr.Radio(_provider_choices(lang0), value=settings.llm_provider, label=L("ui.provider"))
-                with gr.Row():
+                with gr.Row() as model_row:
                     model = gr.Dropdown(
                         label=_model_label(settings.llm_provider, lang0), choices=[],
                         value=default_model(settings) or None, allow_custom_value=True, scale=4,
@@ -272,6 +280,8 @@ def build_app(settings: Settings) -> gr.Blocks:
                 rating = gr.Radio(_rating_choices(lang0), value="", label=L("ui.rating"))
                 style = gr.Radio(_style_choices(lang0), value=settings.prompt_style, label=L("ui.style"))
                 judge_mode = gr.Radio(_judge_choices(lang0), value="on", label=L("ui.judge"))
+                manual_pos = gr.Textbox(label=L("ui.manual_pos"), lines=4, visible=False)
+                manual_neg = gr.Textbox(label=L("ui.manual_neg"), lines=3, visible=False)
                 with gr.Accordion(L("ui.thresholds"), open=False) as acc_thr:
                     max_attempts = gr.Slider(1, 10, value=settings.max_attempts, step=1, label=L("ui.max_attempts"))
                     th = [gr.Slider(0, 1, value=settings.thresholds[d], step=0.01, label=d) for d in DIMENSIONS]
@@ -320,6 +330,8 @@ def build_app(settings: Settings) -> gr.Blocks:
             (rating, lambda x, p: gr.update(label=t("ui.rating", x), choices=_rating_choices(x))),
             (style, lambda x, p: gr.update(label=t("ui.style", x), choices=_style_choices(x))),
             (judge_mode, lambda x, p: gr.update(label=t("ui.judge", x), choices=_judge_choices(x))),
+            (manual_pos, lambda x, p: gr.update(label=t("ui.manual_pos", x))),
+            (manual_neg, lambda x, p: gr.update(label=t("ui.manual_neg", x))),
             (acc_thr, lambda x, p: gr.update(label=t("ui.thresholds", x))),
             (max_attempts, lambda x, p: gr.update(label=t("ui.max_attempts", x))),
             (acc_gen, lambda x, p: gr.update(label=t("ui.generation", x))),
@@ -345,6 +357,16 @@ def build_app(settings: Settings) -> gr.Blocks:
 
         lang.change(apply_lang, [lang, provider], [c for c, _ in localized])
 
+        # Manual mode hides everything that belongs to the LLM / Jev and shows the prompt boxes instead.
+        llm_only = [idea, provider, model_row, rating, style, acc_thr, table]
+        manual_only = [manual_pos, manual_neg]
+
+        def toggle_manual(mode):
+            m = mode == MANUAL
+            return [gr.update(visible=not m) for _ in llm_only] + [gr.update(visible=m) for _ in manual_only]
+
+        judge_mode.change(toggle_manual, judge_mode, llm_only + manual_only)
+
         model_inputs = [provider, image, model, lang]
         refresh.click(refresh_models, model_inputs, model)
         image.change(refresh_models, model_inputs, model)
@@ -355,8 +377,8 @@ def build_app(settings: Settings) -> gr.Blocks:
         )
         go.click(
             run,
-            [lang, idea, image, provider, model, rating, style, judge_mode, max_attempts, *th, width, height, batch_size,
-             seed, steps, cfg, sampler, scheduler, denoise, loras],
+            [lang, idea, image, provider, model, rating, style, judge_mode, manual_pos, manual_neg, max_attempts, *th,
+             width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, loras],
             [status, table, final_pos, final_neg, images, last_log],
         )
         export_btn.click(export, [last_log, lang], report_file)

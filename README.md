@@ -68,6 +68,10 @@ uv run comfy-agent run --idea "..." --style tags
 # Jev mode: on (default) / off (one draft rendered directly; Jev scores it for reference only) / ab (both, same seed)
 uv run comfy-agent run --idea "..." --judge ab --report
 
+# Manual: send your own prompt straight to ComfyUI (no LLM, no Jev; nothing is added to it)
+uv run comfy-agent render --positive "1girl, reading, cherry blossoms" --negative "blurry" --report
+uv run comfy-agent render -P "same girl at night" --image ref.png   # with an image → img2img
+
 # Export any run log as an HTML report (saved to runs/reports/; --lang en or zh-TW)
 uv run comfy-agent report runs/20260924-120000.json --lang en
 ```
@@ -82,6 +86,8 @@ Options for `run` (anything not given falls back to `config.yaml`):
 | LoRA | `--lora name=strength` (repeatable) |
 | Other | `--config path/to/config.yaml` |
 
+`render` takes `--positive/-P` (required), `--negative/-N`, `--image`, `--report`, `--lang` and the same generation, LoRA and config options. The prompts are sent exactly as written: `positive_prefix`, `negative_base` and rating tags are **not** added.
+
 ### WebUI
 
 ```bash
@@ -92,7 +98,7 @@ uv run comfy-agent webui --port 8000
 - Switch the interface language (English / 繁體中文) at the top right. The default comes from `ui.language` in `config.yaml`, and exported reports use the current language.
 - "Prompt writer" switches between OpenRouter and Ollama; the model list follows.
 - The model dropdown only lists vision models when an image is uploaded; ↻ refreshes the list.
-- "Jev review" chooses Use Jev / No Jev / A/B compare; see [Jev modes](#jev-modes).
+- "Jev review" chooses Use Jev / No Jev / A/B compare; see [Jev modes](#jev-modes). "Manual prompt" hides the idea, LLM and Jev controls and shows Positive / Negative boxes instead; what you type is sent to ComfyUI as written (an uploaded image still switches to img2img).
 - The "Jev thresholds" and "Generation parameters" panels adjust the settings for each run.
 - "Connection" changes the ComfyUI and Ollama IP and port. "Save and test connection" writes `COMFYUI_URL` / `OLLAMA_URL` to `.env` (these override `config.yaml` and are read by the CLI too) and tests both connections right away; the next run uses the new addresses without a restart.
 - The right side shows each attempt's scores, the submitted prompts and the result images loaded from the server, live.
@@ -143,7 +149,7 @@ A/B compare uses the Jev loop's first draft as the "without Jev" arm, so both ar
 
 ### Reports
 
-`runs/reports/<log name>.html` is a single HTML file with the idea, parameters, every attempt's scores and prompts, and the final images; A/B reports show both arms side by side with per-dimension score differences. Images are loaded from ComfyUI's `/view` endpoint and never downloaded, so viewing them requires the VPN.
+`runs/reports/<log name>.html` is a single HTML file with the idea, parameters, every attempt's scores and prompts, and the final images; A/B reports show both arms side by side with per-dimension score differences. Manual runs (log `kind: manual`) show the prompts, parameters and images. Images are loaded from ComfyUI's `/view` endpoint and never downloaded, so viewing them requires the VPN.
 
 ## ComfyUI workflow
 

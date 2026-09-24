@@ -99,6 +99,8 @@ def _chosen(arm: dict) -> dict | None:
 def _status(arm: dict, lang: str) -> str:
     if arm.get("refused"):
         return _badge(t("report.refused", lang), "bad")
+    if arm.get("judge_mode") == "manual":
+        return ""
     chosen = _chosen(arm)
     if arm.get("judge_mode") == "off":
         if not chosen or chosen.get("passed") is None:
@@ -117,8 +119,9 @@ def _arm_card(title: str, arm: dict, lang: str) -> str:
     body = [f"<h3>{escape(title)}{_status(arm, lang)}</h3>", f'<div class="chips">{chips}</div>',
             _images(arm.get("images", []), lang)]
     if chosen:
+        if arm.get("judge_mode") != "manual":
+            body.append(_scores(chosen.get("scores", {}), lang))
         body += [
-            _scores(chosen.get("scores", {}), lang),
             '<div class="label" style="margin-top:12px">positive</div>',
             f'<div class="prompt">{escape(chosen["positive"])}</div>',
             '<div class="label">negative</div>',
@@ -191,8 +194,38 @@ def _attempts_table(attempts: list[dict], chosen_n: int | None, lang: str) -> st
     )
 
 
+def _page(parts: list[str], lang: str) -> str:
+    title = t("report.title", lang)
+    html_lang = "zh-Hant" if lang == "zh-TW" else "en"
+    head = [f"<h1>{escape(title)}</h1>", f'<p class="muted">{escape(t("report.vpn_note", lang))}</p>']
+    return (
+        f'<!doctype html><html lang="{html_lang}"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{escape(title)}</title><style>{CSS}</style></head>"
+        f"<body><main>{''.join(head + parts)}</main></body></html>"
+    )
+
+
+def _manual_report(log: dict, lang: str) -> str:
+    """Hand-written prompt: no idea, model, rating, thresholds or scores to show."""
+    gen = log.get("generation", {})
+    meta = _chips([
+        (t("report.time", lang), log.get("time")),
+        (t("report.mode", lang), t("report.manual", lang)),
+        (t("report.render", lang), log.get("mode")),
+        *[(k, gen.get(k)) for k in GEN_KEYS],
+    ])
+    return _page([
+        f'<div class="chips">{meta}</div>',
+        f"<h2>{escape(t('report.result', lang))}</h2>",
+        f'<div class="grid">{_arm_card(t("report.manual", lang), log, lang)}</div>',
+    ], lang)
+
+
 def build_report(log: dict, lang: str = "en") -> str:
     lang = normalize_lang(lang)
+    if log.get("kind") == "manual":
+        return _manual_report(log, lang)
     compare = log.get("kind") == "compare"
     judge_label = t("report.judge_off" if log.get("judge_mode") == "off" else "report.judge_on", lang)
     gen = log.get("generation", {})
@@ -207,10 +240,7 @@ def build_report(log: dict, lang: str = "en") -> str:
         *[(k, gen.get(k)) for k in GEN_KEYS],
     ])
     thresholds = _chips(list((log.get("thresholds") or {}).items()))
-    title = t("report.title", lang)
     parts = [
-        f"<h1>{escape(title)}</h1>",
-        f'<p class="muted">{escape(t("report.vpn_note", lang))}</p>',
         f'<div class="idea">{escape(log.get("idea") or t("report.no_idea", lang))}</div>',
         f'<div class="chips">{meta}</div>',
         f'<div class="chips" style="margin-top:6px"><span class="muted" style="font-size:13px">'
@@ -235,13 +265,7 @@ def build_report(log: dict, lang: str = "en") -> str:
             f'<div class="grid">{_arm_card(judge_label, log, lang)}</div>',
             _attempts_table(log.get("attempts", []), log.get("chosen_attempt"), lang),
         ]
-    html_lang = "zh-Hant" if lang == "zh-TW" else "en"
-    return (
-        f'<!doctype html><html lang="{html_lang}"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{escape(title)}</title><style>{CSS}</style></head>"
-        f"<body><main>{''.join(parts)}</main></body></html>"
-    )
+    return _page(parts, lang)
 
 
 def export_report(log_path: str | Path, out_dir: str | Path | None = None, lang: str = "en") -> Path:

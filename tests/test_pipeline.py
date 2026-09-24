@@ -235,3 +235,30 @@ def test_compare_refusal_renders_nothing(settings):
     r = p.compare("a girl", "m:free")
     assert r.refused and comfy.queued == []
     assert json.loads(r.log_path.read_text())["with_jev"]["refused"]
+
+
+def test_manual_sends_prompt_as_written_without_llm_or_jev(settings):
+    p, orc, comfy = make(settings, [])  # FakeSystemOne with no answers: any Jev call would fail
+    r = p.manual("1girl, reading", "blurry")
+
+    assert not orc.calls and len(comfy.queued) == 1
+    texts = {n["inputs"]["text"] for n in comfy.queued[0].values() if n["class_type"] == "CLIPTextEncode"}
+    assert texts == {"1girl, reading", "blurry"}  # no prefix, negative_base or rating tags
+    assert r.judge_mode == "manual" and r.chosen.verdict is None and r.images
+    log = json.loads(r.log_path.read_text())
+    assert log["kind"] == "manual" and log["attempts"][0]["positive"] == "1girl, reading"
+    assert log["generation"]["seed"] == r.seed
+
+
+def test_manual_with_image_uses_img2img(settings):
+    p, _, comfy = make(settings, [])
+    r = p.manual("x", image=InputImage(b"\x89PNG", "ref.png"))
+    assert r.mode == "img2img" and comfy.uploaded == ["ref.png"]
+    assert comfy.queued[0]["4"]["inputs"]["latent_image"] == ["16", 0]
+
+
+def test_manual_rejects_empty_positive(settings):
+    p, _, comfy = make(settings, [])
+    with pytest.raises(ValueError):
+        p.manual("  ", "neg")
+    assert not comfy.queued

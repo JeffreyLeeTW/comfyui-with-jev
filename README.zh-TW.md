@@ -68,6 +68,10 @@ uv run comfy-agent run --idea "..." --style tags
 # Jev 模式：on（預設）／off（產生一次就生圖，Jev 只評分供參考）／ab（兩種各生一組、同 seed 對照）
 uv run comfy-agent run --idea "..." --judge ab --report
 
+# 手動：自己寫的 prompt 直接送 ComfyUI（不用 LLM、不用 Jev，不會加任何東西）
+uv run comfy-agent render --positive "1girl, reading, cherry blossoms" --negative "blurry" --report
+uv run comfy-agent render -P "same girl at night" --image ref.png   # 有圖 → img2img
+
 # 把任一次的紀錄匯出成 HTML 報告（存到 runs/reports/；--lang en 或 zh-TW）
 uv run comfy-agent report runs/20260924-120000.json --lang zh-TW
 ```
@@ -82,6 +86,8 @@ uv run comfy-agent report runs/20260924-120000.json --lang zh-TW
 | LoRA | `--lora name=strength`（可以重複指定多個） |
 | 其他 | `--config path/to/config.yaml` |
 
+`render` 可以用 `--positive/-P`（必填）、`--negative/-N`、`--image`、`--report`、`--lang`，以及同樣的生圖、LoRA、config 參數。prompt 會照原樣送出，**不會**加上 `positive_prefix`、`negative_base` 或分級 tag。
+
 ### WebUI
 
 ```bash
@@ -92,7 +98,7 @@ uv run comfy-agent webui --port 8000
 - 右上角可以切換介面語言（English／繁體中文），預設值是 `config.yaml` 的 `ui.language`；匯出的報告也會使用目前的語言。
 - 「Prompt 產生器」可以切換 OpenRouter／Ollama，模型清單會跟著更新。
 - 模型下拉選單會依有沒有上傳圖片，自動只列出能看圖的模型；↻ 可以重新整理清單。
-- 「Jev 評審」可選使用 Jev／不用 Jev／A-B 對照，說明見下方〈Jev 模式〉。
+- 「Jev 評審」可選使用 Jev／不用 Jev／A-B 對照，說明見下方〈Jev 模式〉。選「手動 prompt」時會隱藏構想、LLM 和 Jev 相關欄位，改顯示 Positive／Negative 輸入框，輸入的內容照原樣送到 ComfyUI（有上傳圖片時一樣走 img2img）。
 - 「Jev 門檻」和「生圖參數」兩個折疊區塊，可以調整每次執行的設定。
 - 「連線設定」可以改 ComfyUI 和 Ollama 的 IP 與 port。按「儲存並測試連線」會寫入 `.env` 的 `COMFYUI_URL`／`OLLAMA_URL`（優先於 `config.yaml`，CLI 也會讀），並立刻測試連線；下一次執行就生效，不用重開。
 - 右側會即時顯示每一輪的分數、最後送出的 prompt，以及直接從 server 讀取的結果圖。
@@ -143,7 +149,7 @@ A-B 對照直接拿 Jev 迴圈的第 1 版當「無 Jev」組，兩組從同一�
 
 ### 報告
 
-`runs/reports/<紀錄檔名>.html` 是單一 HTML 檔，內容有構想、參數、每一輪的分數與 prompt、最後的圖；A-B 對照時會左右並排，並附各面向的分數差異。圖片從 ComfyUI 的 `/view` 讀取，不會下載到本機，所以要連 VPN 才看得到。
+`runs/reports/<紀錄檔名>.html` 是單一 HTML 檔，內容有構想、參數、每一輪的分數與 prompt、最後的圖；A-B 對照時會左右並排，並附各面向的分數差異；手動模式（紀錄的 `kind: manual`）只顯示 prompt、參數和圖。圖片從 ComfyUI 的 `/view` 讀取，不會下載到本機，所以要連 VPN 才看得到。
 
 ## ComfyUI workflow
 

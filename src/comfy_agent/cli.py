@@ -1,4 +1,4 @@
-"""Command line interface: comfy-agent run | models | check | report | webui."""
+"""Command line interface: comfy-agent run | render | models | check | report | webui."""
 
 from __future__ import annotations
 
@@ -116,6 +116,22 @@ def _choose_model(s, provider: str, need_vision: bool) -> str:
     return found[idx - 1].id
 
 
+def _gen_params(s, width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, lora):
+    loras = _parse_loras(lora)
+    return s.gen.override(
+        width=width, height=height, batch_size=batch_size, seed=seed, steps=steps, cfg=cfg,
+        sampler_name=sampler, scheduler=scheduler, denoise=denoise,
+        lora_strengths=(s.gen.lora_strengths | loras) if loras else None,
+    )
+
+
+def _print_images(images, label: str = "") -> None:
+    prefix = f"[{label}] " if label else ""
+    for img in images:
+        typer.secho(f"{prefix}image on server: output/{img.subfolder + '/' if img.subfolder else ''}{img.filename}", fg="cyan")
+        typer.echo(f"  view: {img.url}")
+
+
 def _parse_loras(values: list[str] | None) -> dict[str, float] | None:
     if not values:
         return None
@@ -175,12 +191,7 @@ def run(
     provider = _provider(s, provider)
     model = model or default_model(s, provider) or _choose_model(s, provider, need_vision=image is not None)
 
-    loras = _parse_loras(lora)
-    gen = s.gen.override(
-        width=width, height=height, batch_size=batch_size, seed=seed, steps=steps, cfg=cfg,
-        sampler_name=sampler, scheduler=scheduler, denoise=denoise,
-        lora_strengths=(s.gen.lora_strengths | loras) if loras else None,
-    )
+    gen = _gen_params(s, width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, lora)
     overrides = {"fidelity": t_fidelity, "format": t_format, "completeness": t_completeness, "negative": t_negative}
     thresholds = s.thresholds | {k: v for k, v in overrides.items() if v is not None}
 
@@ -230,10 +241,7 @@ def run(
         result = pipeline.run(*args, **kwargs, use_judge=judge == "on")
         arms = [("", result)]
     for label, arm in arms:
-        for img in arm.images:
-            prefix = f"[{label}] " if label else ""
-            typer.secho(f"{prefix}image on server: output/{img.subfolder + '/' if img.subfolder else ''}{img.filename}", fg="cyan")
-            typer.echo(f"  view: {img.url}")
+        _print_images(arm.images, label)
     typer.echo(f"log: {result.log_path}")
     if report:
         from .report import export_report
@@ -242,6 +250,48 @@ def run(
     if result.refused:
         typer.echo(f"refusal recorded in {s.runs_dir / 'refusals.jsonl'}")
         raise typer.Exit(1)
+
+
+@app.command()
+def render(
+    positive: Annotated[str, typer.Option("--positive", "-P", help="Positive prompt, sent as written")],
+    negative: Annotated[str, typer.Option("--negative", "-N", help="Negative prompt, sent as written")] = "",
+    image: Annotated[Optional[Path], typer.Option("--image", help="Reference image -> img2img", exists=True, dir_okay=False)] = None,
+    report: Annotated[bool, typer.Option("--report", help="Also export an HTML report")] = False,
+    lang: LangOpt = None,
+    width: Annotated[Optional[int], typer.Option()] = None,
+    height: Annotated[Optional[int], typer.Option()] = None,
+    batch_size: Annotated[Optional[int], typer.Option()] = None,
+    seed: Annotated[Optional[int], typer.Option(help="-1 = random")] = None,
+    steps: Annotated[Optional[int], typer.Option()] = None,
+    cfg: Annotated[Optional[float], typer.Option()] = None,
+    sampler: Annotated[Optional[str], typer.Option()] = None,
+    scheduler: Annotated[Optional[str], typer.Option()] = None,
+    denoise: Annotated[Optional[float], typer.Option(help="img2img only")] = None,
+    lora: Annotated[Optional[list[str]], typer.Option(help="lora_name=strength, repeatable")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Hand-written prompt -> ComfyUI directly (no LLM, no Jev, no prefix or rating tags)."""
+    from .pipeline import InputImage, build_pipeline
+
+    if not positive.strip():
+        raise typer.BadParameter("--positive is empty")
+    s = load_settings(config)
+    gen = _gen_params(s, width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, lora)
+
+    def on_event(e: dict) -> None:
+        if e["type"] == "rendering":
+            typer.echo(f"Queued in ComfyUI: prompt_id={e['prompt_id']} seed={e['seed']} - waiting...")
+
+    result = build_pipeline(s).manual(
+        positive, negative, InputImage.from_path(image) if image else None, gen, on_event=on_event
+    )
+    _print_images(result.images)
+    typer.echo(f"log: {result.log_path}")
+    if report:
+        from .report import export_report
+
+        typer.echo(f"report: {export_report(result.log_path, lang=_lang(s, lang))}")
 
 
 @app.command("report")

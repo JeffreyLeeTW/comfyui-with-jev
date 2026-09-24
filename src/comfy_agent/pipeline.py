@@ -1,7 +1,8 @@
 """Generate -> judge loop, then render the accepted (or best) prompt in ComfyUI.
 
 `run` uses the Jev loop (or, with use_judge=False, one draft scored for reference only);
-`compare` renders the Jev result and the first draft with the same seed for an A/B comparison.
+`compare` renders the Jev result and the first draft with the same seed for an A/B comparison;
+`manual` renders a hand-written prompt exactly as typed (no LLM, no Jev).
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ class RunResult:
     provider: str
     model: str
     mode: str
-    judge_mode: str = "on"  # "on" = Jev loop decided; "off" = first draft, score is reference only
+    judge_mode: str = "on"  # "on" = Jev loop decided; "off" = first draft, score is reference only; "manual"
     rating: str | None = None
     style: str = "tags"
     attempts: list[Attempt] = field(default_factory=list)
@@ -205,6 +206,28 @@ class Pipeline:
         emit({"type": "done", "result": result})
         return result
 
+    def manual(
+        self,
+        positive: str,
+        negative: str = "",
+        image: InputImage | None = None,
+        gen: GenParams | None = None,
+        on_event: EventHandler | None = None,
+    ) -> RunResult:
+        """Render a hand-written prompt as-is: no LLM, no Jev, no prefix or rating tags."""
+        if not positive.strip():
+            raise ValueError("positive prompt is empty")
+        emit, gen = on_event or (lambda _e: None), gen or self.settings.gen
+        attempt = Attempt(1, positive, negative, "", None)
+        result = RunResult(
+            idea="", provider="manual", model="", mode="img2img" if image else "txt2img",
+            judge_mode="manual", attempts=[attempt], chosen=attempt,
+        )
+        self._render(result, self._upload(image, emit), gen, emit)
+        result.log_path = self._save_manual_log(result, gen)
+        emit({"type": "done", "result": result})
+        return result
+
     # -- steps ----------------------------------------------------------------
 
     def _prepare(self, idea, image, gen, thresholds, max_attempts, rating, style, on_event, need_judge: bool):
@@ -346,6 +369,17 @@ class Pipeline:
         path = _new_log_path(self.settings.runs_dir)
         data = {"kind": "run"} | self._common_log(result, gen, thresholds) | _result_dict(result)
         data["generation"]["seed"] = result.seed
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def _save_manual_log(self, result: RunResult, gen: GenParams) -> Path:
+        path = _new_log_path(self.settings.runs_dir)
+        data = {
+            "kind": "manual",
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "mode": result.mode,
+            "generation": asdict(gen) | {"seed": result.seed},
+        } | _result_dict(result)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 

@@ -46,3 +46,11 @@ def test_report_in_traditional_chinese(settings):
     html = export_report(r.log_path, lang="zh-TW").read_text()
     assert '<html lang="zh-Hant">' in html and "有 Jev" in html and "分數差異" in html
     assert "Score difference" not in html
+
+
+def test_manual_report(settings):
+    r = _pipeline(settings, []).manual("<i>1girl</i>", "blurry")
+    html = export_report(r.log_path).read_text()
+    assert "Manual prompt" in html and "&lt;i&gt;1girl&lt;/i&gt;" in html and "http://x/view" in html
+    assert "No Jev scores" not in html and "thresholds" not in html
+    assert "手動 prompt" in export_report(r.log_path, lang="zh-TW").read_text()
