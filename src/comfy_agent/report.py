@@ -10,8 +10,8 @@ from html import escape
 from pathlib import Path
 
 from .config import DIMENSIONS
+from .i18n import normalize_lang, t
 
-JUDGE_LABELS = {"on": "使用 Jev", "off": "不用 Jev（分數僅供參考）"}
 GEN_KEYS = ("width", "height", "batch_size", "seed", "steps", "cfg", "sampler_name", "scheduler", "denoise")
 
 CSS = """
@@ -59,9 +59,9 @@ def _badge(text: str, cls: str) -> str:
     return f'<span class="badge {cls}">{escape(text)}</span>'
 
 
-def _images(images: list[dict]) -> str:
+def _images(images: list[dict], lang: str) -> str:
     if not images:
-        return '<div class="noimg">沒有圖片（未生圖或被拒絕）</div>'
+        return f'<div class="noimg">{escape(t("report.no_images", lang))}</div>'
     tags = "".join(
         f'<a href="{escape(i["url"])}" target="_blank" rel="noopener">'
         f'<img src="{escape(i["url"])}" alt="{escape(i["filename"])}" loading="lazy"></a>'
@@ -70,22 +70,22 @@ def _images(images: list[dict]) -> str:
     return f'<div class="imgs">{tags}</div>'
 
 
-def _scores(scores: dict) -> str:
+def _scores(scores: dict, lang: str) -> str:
     if not scores:
-        return '<p class="muted">沒有 Jev 分數</p>'
+        return f'<p class="muted">{escape(t("report.no_scores", lang))}</p>'
     rows = []
     for d in DIMENSIONS:
         sc = scores.get(d)
         if not sc:
             continue
-        v, t = sc["value"], sc.get("threshold")
-        ok = t is None or v >= t
-        tick = f'<span class="tick" style="left:{t * 100:.1f}%"></span>' if t is not None else ""
+        v, th = sc["value"], sc.get("threshold")
+        ok = th is None or v >= th
+        tick = f'<span class="tick" style="left:{th * 100:.1f}%"></span>' if th is not None else ""
         rows.append(
             f'<div class="score" title="{escape(sc.get("level", ""))}"><span>{escape(d)}</span>'
             f'<span class="track"><span class="fill {"ok" if ok else "bad"}" style="width:{v * 100:.1f}%"></span>{tick}</span>'
             f'<span class="{"pos" if ok else "neg"}">{v:.2f}'
-            + (f' <span class="muted">/ {t:.2f}</span>' if t is not None else "")
+            + (f' <span class="muted">/ {th:.2f}</span>' if th is not None else "")
             + "</span></div>"
         )
     return "".join(rows)
@@ -96,36 +96,44 @@ def _chosen(arm: dict) -> dict | None:
     return next((a for a in arm.get("attempts", []) if a["number"] == n), None)
 
 
-def _status(arm: dict) -> str:
+def _status(arm: dict, lang: str) -> str:
     if arm.get("refused"):
-        return _badge("模型拒絕", "bad")
+        return _badge(t("report.refused", lang), "bad")
     chosen = _chosen(arm)
     if arm.get("judge_mode") == "off":
         if not chosen or chosen.get("passed") is None:
-            return _badge("未評分", "warn")
-        return _badge("參考：達標" if chosen["passed"] else "參考：未達標", "ok" if chosen["passed"] else "warn")
-    return _badge(f"第 {arm['chosen_attempt']} 輪通過", "ok") if arm.get("passed") else _badge("未達標（送最高分）", "warn")
+            return _badge(t("report.unscored", lang), "warn")
+        return _badge(t("report.ref_pass" if chosen["passed"] else "report.ref_fail", lang),
+                      "ok" if chosen["passed"] else "warn")
+    if arm.get("passed"):
+        return _badge(t("report.passed_at", lang, n=arm["chosen_attempt"]), "ok")
+    return _badge(t("report.not_passed", lang), "warn")
 
 
-def _arm_card(title: str, arm: dict) -> str:
+def _arm_card(title: str, arm: dict, lang: str) -> str:
     chosen = _chosen(arm)
-    body = [f"<h3>{escape(title)}{_status(arm)}</h3>",
-            f'<div class="chips">{_chips([("seed", arm.get("seed")), ("prompt_id", arm.get("prompt_id")), ("嘗試次數", len(arm.get("attempts", [])))])}</div>',
-            _images(arm.get("images", []))]
+    chips = _chips([("seed", arm.get("seed")), ("prompt_id", arm.get("prompt_id")),
+                    (t("report.attempt_count", lang), len(arm.get("attempts", [])))])
+    body = [f"<h3>{escape(title)}{_status(arm, lang)}</h3>", f'<div class="chips">{chips}</div>',
+            _images(arm.get("images", []), lang)]
     if chosen:
         body += [
-            _scores(chosen.get("scores", {})),
+            _scores(chosen.get("scores", {}), lang),
             '<div class="label" style="margin-top:12px">positive</div>',
             f'<div class="prompt">{escape(chosen["positive"])}</div>',
             '<div class="label">negative</div>',
             f'<div class="prompt">{escape(chosen["negative"])}</div>',
         ]
     if arm.get("refused"):
-        body.append(f'<div class="banner bad">拒絕原因：{escape(arm["refused"])}</div>')
+        body.append(f'<div class="banner bad">{escape(t("report.refused_reason", lang, reason=arm["refused"]))}</div>')
     return f'<section class="card">{"".join(body)}</section>'
 
 
-def _delta_table(a: dict, b: dict) -> str:
+def _delta_cls(delta: float) -> str:
+    return "pos" if delta > 0 else "neg" if delta < 0 else "muted"
+
+
+def _delta_table(a: dict, b: dict, lang: str) -> str:
     sa, sb = (_chosen(a) or {}).get("scores", {}), (_chosen(b) or {}).get("scores", {})
     if not sa or not sb:
         return ""
@@ -134,24 +142,26 @@ def _delta_table(a: dict, b: dict) -> str:
         if d not in sa or d not in sb:
             continue
         delta = sa[d]["value"] - sb[d]["value"]
-        cls = "pos" if delta > 0 else "neg" if delta < 0 else "muted"
         rows.append(
             f'<tr><td>{escape(d)}</td><td class="num">{sa[d]["value"]:.2f}</td>'
-            f'<td class="num">{sb[d]["value"]:.2f}</td><td class="num {cls}">{delta:+.2f}</td></tr>'
+            f'<td class="num">{sb[d]["value"]:.2f}</td><td class="num {_delta_cls(delta)}">{delta:+.2f}</td></tr>'
         )
-    wa, wb = min(sa[d]["value"] for d in sa), min(sb[d]["value"] for d in sb)
+    wa, wb = min(v["value"] for v in sa.values()), min(v["value"] for v in sb.values())
     rows.append(
-        f'<tr><th>最弱面向</th><td class="num">{wa:.2f}</td><td class="num">{wb:.2f}</td>'
-        f'<td class="num {"pos" if wa > wb else "neg" if wa < wb else "muted"}">{wa - wb:+.2f}</td></tr>'
+        f'<tr><th>{escape(t("report.weakest", lang))}</th><td class="num">{wa:.2f}</td><td class="num">{wb:.2f}</td>'
+        f'<td class="num {_delta_cls(wa - wb)}">{wa - wb:+.2f}</td></tr>'
     )
+    head = "".join(f"<th>{escape(x)}</th>" for x in (
+        t("report.dimension", lang), t("arm.with_jev", lang), t("arm.without_jev", lang), t("report.difference", lang),
+    ))
     return (
-        "<h2>分數差異（有 Jev − 無 Jev）</h2>"
-        '<div class="table-wrap"><table><thead><tr><th>面向</th><th>有 Jev</th><th>無 Jev</th><th>差異</th></tr></thead>'
+        f"<h2>{escape(t('report.delta_title', lang))}</h2>"
+        f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
 
 
-def _attempts_table(attempts: list[dict], chosen_n: int | None) -> str:
+def _attempts_table(attempts: list[dict], chosen_n: int | None, lang: str) -> str:
     if not attempts:
         return ""
     head = "".join(f"<th>{escape(d)}</th>" for d in DIMENSIONS)
@@ -174,65 +184,71 @@ def _attempts_table(attempts: list[dict], chosen_n: int | None) -> str:
             + "</details></td></tr>"
         )
     return (
-        "<h2>每一輪 Jev 評分</h2><p class=\"muted\">★ = 最後送出的版本</p>"
-        f'<div class="table-wrap"><table><thead><tr><th>#</th>{head}<th>結果</th><th>prompt</th></tr></thead>'
-        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        f"<h2>{escape(t('report.attempts_title', lang))}</h2>"
+        f'<p class="muted">{escape(t("report.star_note", lang))}</p>'
+        f'<div class="table-wrap"><table><thead><tr><th>#</th>{head}<th>{escape(t("report.verdict", lang))}</th>'
+        f"<th>prompt</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
     )
 
 
-def build_report(log: dict) -> str:
+def build_report(log: dict, lang: str = "en") -> str:
+    lang = normalize_lang(lang)
     compare = log.get("kind") == "compare"
+    judge_label = t("report.judge_off" if log.get("judge_mode") == "off" else "report.judge_on", lang)
     gen = log.get("generation", {})
     meta = _chips([
-        ("時間", log.get("time")),
-        ("模式", "A-B 對照" if compare else JUDGE_LABELS.get(log.get("judge_mode", "on"))),
+        (t("report.time", lang), log.get("time")),
+        (t("report.mode", lang), t("report.ab", lang) if compare else judge_label),
         ("provider", log.get("provider")),
-        ("模型", log.get("model")),
-        ("生圖", log.get("mode")),
-        ("分級", (log.get("rating") or "不指定").upper()),
+        (t("report.model", lang), log.get("model")),
+        (t("report.render", lang), log.get("mode")),
+        (t("report.rating", lang), (log.get("rating") or "").upper() or t("rating.none", lang)),
         *[(k, gen.get(k)) for k in GEN_KEYS],
     ])
     thresholds = _chips(list((log.get("thresholds") or {}).items()))
+    title = t("report.title", lang)
     parts = [
-        '<h1>comfy-agent 報告</h1>',
-        f'<p class="muted">圖片從 ComfyUI server 讀取（需連 VPN）</p>',
-        f'<div class="idea">{escape(log.get("idea") or "（沒有文字構想，使用參考圖）")}</div>',
+        f"<h1>{escape(title)}</h1>",
+        f'<p class="muted">{escape(t("report.vpn_note", lang))}</p>',
+        f'<div class="idea">{escape(log.get("idea") or t("report.no_idea", lang))}</div>',
         f'<div class="chips">{meta}</div>',
-        f'<div class="chips" style="margin-top:6px"><span class="muted" style="font-size:13px">門檻</span>{thresholds}</div>',
+        f'<div class="chips" style="margin-top:6px"><span class="muted" style="font-size:13px">'
+        f'{escape(t("report.thresholds", lang))}</span>{thresholds}</div>',
     ]
     if compare:
         a, b = log["with_jev"], log["without_jev"]
         if a.get("refused"):
-            parts.append(f'<div class="banner bad">模型拒絕，流程已停止：{escape(a["refused"])}</div>')
+            parts.append(f'<div class="banner bad">{escape(t("report.refused_banner", lang, reason=a["refused"]))}</div>')
         if log.get("identical"):
-            parts.append('<div class="banner warn">第 1 版就是最後送出的版本，兩組 prompt 相同，只生了一次圖。</div>')
+            parts.append(f'<div class="banner warn">{escape(t("msg.identical", lang))}</div>')
         parts += [
-            "<h2>對照結果</h2>",
-            f'<div class="grid">{_arm_card("有 Jev", a)}{_arm_card("無 Jev（第 1 版）", b)}</div>',
-            _delta_table(a, b),
-            _attempts_table(a.get("attempts", []), a.get("chosen_attempt")),
+            f"<h2>{escape(t('report.compare', lang))}</h2>",
+            f'<div class="grid">{_arm_card(t("arm.with_jev", lang), a, lang)}'
+            f'{_arm_card(t("arm.without_jev", lang), b, lang)}</div>',
+            _delta_table(a, b, lang),
+            _attempts_table(a.get("attempts", []), a.get("chosen_attempt"), lang),
         ]
     else:
-        title = JUDGE_LABELS.get(log.get("judge_mode", "on"), "結果")
         parts += [
-            "<h2>結果</h2>",
-            f'<div class="grid">{_arm_card(title, log)}</div>',
-            _attempts_table(log.get("attempts", []), log.get("chosen_attempt")),
+            f"<h2>{escape(t('report.result', lang))}</h2>",
+            f'<div class="grid">{_arm_card(judge_label, log, lang)}</div>',
+            _attempts_table(log.get("attempts", []), log.get("chosen_attempt"), lang),
         ]
+    html_lang = "zh-Hant" if lang == "zh-TW" else "en"
     return (
-        '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
+        f'<!doctype html><html lang="{html_lang}"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>comfy-agent 報告</title><style>{CSS}</style></head>"
+        f"<title>{escape(title)}</title><style>{CSS}</style></head>"
         f"<body><main>{''.join(parts)}</main></body></html>"
     )
 
 
-def export_report(log_path: str | Path, out_dir: str | Path | None = None) -> Path:
+def export_report(log_path: str | Path, out_dir: str | Path | None = None, lang: str = "en") -> Path:
     """Write <runs>/reports/<log name>.html next to the log and return its path."""
     log_path = Path(log_path)
     log = json.loads(log_path.read_text(encoding="utf-8"))
     out = Path(out_dir) if out_dir else log_path.parent / "reports"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{log_path.stem}.html"
-    path.write_text(build_report(log), encoding="utf-8")
+    path.write_text(build_report(log, lang), encoding="utf-8")
     return path

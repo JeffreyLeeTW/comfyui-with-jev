@@ -76,6 +76,7 @@ class Settings:
     ratings: dict[str, RatingTags]
     gen: GenParams
     runs_dir: Path
+    language: str
     openrouter_api_key: str
     typesafe_api_key: str
 
@@ -161,6 +162,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         ratings=ratings,
         gen=gen,
         runs_dir=_resolve(raw.get("runs_dir", "runs")),
+        language=str((raw.get("ui") or {}).get("language", "en")),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         typesafe_api_key=os.environ.get("TYPESAFE_API_KEY", ""),
     )

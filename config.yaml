@@ -63,3 +63,6 @@ generation:
   lora_strengths: {}
 
 runs_dir: runs
+
+ui:
+  language: en            # en | zh-TW; default language of the WebUI and HTML reports

@@ -6,9 +6,6 @@ from .config import PROVIDERS, Settings
 from .ollama import OllamaClient
 from .openrouter import OpenRouterClient, PromptWriter
 
-PROVIDER_LABELS = {"openrouter": "OpenRouter（免費模型）", "ollama": "Ollama（本地）"}
-
-
 def resolve_provider(settings: Settings, provider: str | None) -> str:
     provider = (provider or settings.llm_provider).lower()
     if provider not in PROVIDERS:

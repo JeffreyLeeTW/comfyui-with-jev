@@ -8,6 +8,7 @@ from typing import Annotated, Optional
 import typer
 
 from .config import JUDGE_MODES, PROVIDERS, RATINGS, load_settings
+from .i18n import LANGS
 from .llm import default_model, make_writer, resolve_provider
 from .openrouter import ModelInfo
 from .refusals import refusal_counts
@@ -15,6 +16,7 @@ from .refusals import refusal_counts
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 
 ConfigOpt = Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml")]
+LangOpt = Annotated[Optional[str], typer.Option("--lang", help=f"Report language: {' | '.join(LANGS)}; default ui.language")]
 ProviderOpt = Annotated[
     Optional[str], typer.Option("--provider", "-p", help=f"{' | '.join(PROVIDERS)}; default from config.yaml")
 ]
@@ -25,6 +27,13 @@ def _provider(settings, provider: str | None) -> str:
         return resolve_provider(settings, provider)
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
+
+
+def _lang(settings, lang: str | None) -> str:
+    lang = lang or settings.language
+    if lang not in LANGS:
+        raise typer.BadParameter(f"--lang must be one of: {', '.join(LANGS)}")
+    return lang
 
 
 def _print_models(models: list[ModelInfo], refused: dict[str, int]) -> None:
@@ -128,6 +137,7 @@ def run(
     rating: Annotated[Optional[str], typer.Option("--rating", help="sfw | nsfw; omit to add no rating tags")] = None,
     judge: Annotated[str, typer.Option("--judge", help="on = Jev loop | off = one draft, scored for reference | ab = both, same seed")] = "on",
     report: Annotated[bool, typer.Option("--report", help="Also export an HTML report")] = False,
+    lang: LangOpt = None,
     max_attempts: Annotated[Optional[int], typer.Option("--max-attempts")] = None,
     t_fidelity: Annotated[Optional[float], typer.Option("--t-fidelity", help="Threshold 0..1")] = None,
     t_format: Annotated[Optional[float], typer.Option("--t-format")] = None,
@@ -224,7 +234,7 @@ def run(
     if report:
         from .report import export_report
 
-        typer.echo(f"report: {export_report(result.log_path)}")
+        typer.echo(f"report: {export_report(result.log_path, lang=_lang(s, lang))}")
     if result.refused:
         typer.echo(f"refusal recorded in {s.runs_dir / 'refusals.jsonl'}")
         raise typer.Exit(1)
@@ -234,11 +244,13 @@ def run(
 def report_cmd(
     log: Annotated[Path, typer.Argument(help="Run log, e.g. runs/20260924-120000.json", exists=True, dir_okay=False)],
     out_dir: Annotated[Optional[Path], typer.Option("--out", help="Output folder (default: <runs>/reports)")] = None,
+    lang: LangOpt = None,
+    config: ConfigOpt = None,
 ) -> None:
     """Export a run log as an HTML report."""
     from .report import export_report
 
-    typer.echo(export_report(log, out_dir))
+    typer.echo(export_report(log, out_dir, _lang(load_settings(config), lang)))
 
 
 @app.command()
