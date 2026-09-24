@@ -19,6 +19,8 @@ DIMENSIONS = ("fidelity", "format", "completeness", "negative")
 RATINGS = ("sfw", "nsfw")
 PROVIDERS = ("openrouter", "ollama")
 JUDGE_MODES = ("on", "off", "ab")  # Jev loop / no Jev (score for reference only) / both, same seed
+# How the writer phrases the prompt body: danbooru tags, or English sentences (fixed prefix tags stay tags).
+PROMPT_STYLES = ("natural", "tags")
 # Told to both the prompt writer and Jev when a rating is chosen.
 RATING_DESCRIPTIONS = {
     "sfw": "SFW: the image must be safe for work, with no nudity or sexual content, even if the idea hints at it",
@@ -28,7 +30,7 @@ RATING_DESCRIPTIONS = {
 
 @dataclass(frozen=True)
 class RatingTags:
-    """Tags forced into the prompt for a content rating; the opposite side is stripped of them."""
+    """Tags forced into the prompt for a content rating; in tag style the opposite side is stripped of them."""
 
     positive: str = ""
     negative: str = ""
@@ -71,6 +73,7 @@ class Settings:
     judge_model: str
     max_attempts: int
     thresholds: dict[str, float]
+    prompt_style: str
     positive_prefix: str
     negative_base: str
     ratings: dict[str, RatingTags]
@@ -132,6 +135,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     provider = str(llm.get("provider", "openrouter")).lower()
     if provider not in PROVIDERS:
         raise ValueError(f"llm.provider must be one of {PROVIDERS}, got {provider!r}")
+    style = str(prompt.get("style", "natural")).lower()
+    if style not in PROMPT_STYLES:
+        raise ValueError(f"prompt.style must be one of {PROMPT_STYLES}, got {style!r}")
     thresholds = {d: 0.67 for d in DIMENSIONS} | (judge.get("thresholds") or {})
     ratings_raw = prompt.get("ratings") or {}
     ratings = {
@@ -157,6 +163,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         judge_model=judge.get("model", "jev-latest"),
         max_attempts=int(judge.get("max_attempts", 5)),
         thresholds={d: float(thresholds[d]) for d in DIMENSIONS},
+        prompt_style=style,
         positive_prefix=prompt.get("positive_prefix", ""),
         negative_base=prompt.get("negative_base", ""),
         ratings=ratings,

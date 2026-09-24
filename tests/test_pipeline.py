@@ -17,10 +17,12 @@ class FakeOpenRouter:
         self.calls = []
         self.refuse_on = refuse_on
         self.ratings = []
+        self.styles = []
 
-    def generate(self, model, idea, image_url, history, rating=None):
+    def generate(self, model, idea, image_url, history, rating=None, style="tags"):
         self.calls.append((model, idea, image_url, list(history)))
         self.ratings.append(rating)
+        self.styles.append(style)
         n = len(self.calls)
         if n == self.refuse_on:
             raise ModelRefusal(model, "explicit content")
@@ -114,7 +116,7 @@ def test_refusal_stops_run_without_render_and_is_recorded(settings):
 def test_sfw_rating_forces_tags_and_strips_conflicts(settings):
     fake = FakeSystemOne([all_dims(GOOD)])
     orc, comfy = FakeOpenRouter(), FakeComfy()
-    r = Pipeline(settings, orc, JevJudge(fake), comfy).run("a girl", "m:free", rating="sfw")
+    r = Pipeline(settings, orc, JevJudge(fake), comfy).run("a girl", "m:free", rating="sfw", style="tags")
 
     a = r.chosen
     assert orc.ratings == ["sfw"] and r.rating == "sfw"
@@ -135,6 +137,36 @@ def test_nsfw_rating_and_unset_rating(settings):
     r = p.run("a girl", "m:free")
     assert "nsfw" not in r.chosen.positive and "safe" in r.chosen.negative  # untouched
     assert "not specified" in fake.requests[1][0]["content_rating"]
+
+
+class ProseWriter(FakeOpenRouter):
+    def generate(self, model, idea, image_url, history, rating=None, style="tags"):
+        super().generate(model, idea, image_url, history, rating, style)
+        return GeneratedPrompt("A  girl stands\nin the rain, nude.", "Extra people.", "", "{}")
+
+
+def test_natural_style_adds_prefix_tags_and_keeps_prose(settings):
+    fake = FakeSystemOne([all_dims(GOOD)])
+    orc, comfy = ProseWriter(), FakeComfy()
+    r = Pipeline(settings, orc, JevJudge(fake), comfy).run("a girl", "m:free", rating="sfw", style="natural")
+
+    a = r.chosen
+    assert orc.styles == ["natural"] and r.style == "natural"
+    assert a.positive.startswith("masterpiece, best quality") and a.positive.endswith(", safe, A girl stands in the rain, nude.")
+    assert a.negative.startswith("worst quality") and a.negative.endswith("sex, Extra people.")
+    state, questions, _ = fake.requests[0]
+    assert "natural-language" in state["notes"] and "fluent" in questions["format"].instructions
+    assert r.chosen.verdict.style == "natural"
+    assert json.loads(r.log_path.read_text())["prompt_style"] == "natural"
+
+
+def test_style_defaults_to_config_and_is_validated(settings):
+    from dataclasses import replace
+
+    p, orc, _ = make(replace(settings, prompt_style="tags"), [all_dims(GOOD)])
+    assert p.run("a girl", "m").style == "tags" and orc.styles == ["tags"]
+    with pytest.raises(ValueError, match="style"):
+        p.run("a girl", "m", style="haiku")
 
 
 def test_without_jev_sends_first_draft_and_scores_for_reference(settings):

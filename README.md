@@ -60,6 +60,9 @@ uv run comfy-agent run --idea "..." --no-render
 # Content rating (the "Content rating" option in the WebUI): sfw or nsfw; omit for unspecified
 uv run comfy-agent run --idea "..." --rating sfw
 
+# Prompt style (the "Prompt style" option in the WebUI): natural (English sentences, default) or tags (danbooru tags)
+uv run comfy-agent run --idea "..." --style tags
+
 # Jev mode: on (default) / off (one draft rendered directly; Jev scores it for reference only) / ab (both, same seed)
 uv run comfy-agent run --idea "..." --judge ab --report
 
@@ -71,7 +74,7 @@ Options for `run` (anything not given falls back to `config.yaml`):
 
 | Category | Options |
 | --- | --- |
-| Model / flow | `--provider/-p` (`openrouter` / `ollama`), `--model/-m`, `--max-attempts`, `--rating` (`sfw` / `nsfw`), `--judge` (`on` / `off` / `ab`), `--report` (also export an HTML report), `--lang` (report language: `en` / `zh-TW`) |
+| Model / flow | `--provider/-p` (`openrouter` / `ollama`), `--model/-m`, `--max-attempts`, `--rating` (`sfw` / `nsfw`), `--style` (`natural` / `tags`), `--judge` (`on` / `off` / `ab`), `--report` (also export an HTML report), `--lang` (report language: `en` / `zh-TW`) |
 | Jev thresholds (0–1) | `--t-fidelity`, `--t-format`, `--t-completeness`, `--t-negative` |
 | Generation | `--width`, `--height`, `--batch-size`, `--seed` (-1 = random), `--steps`, `--cfg`, `--sampler`, `--scheduler`, `--denoise` (img2img only) |
 | LoRA | `--lora name=strength` (repeatable) |
@@ -102,7 +105,7 @@ uv run comfy-agent webui --port 8000
 | `openrouter` | `default_model` (empty = choose on each run), `temperature` |
 | `ollama` | `url`, `default_model`, `temperature`, `think` (whether thinking models reason first; off by default for speed), `timeout_s` (includes loading the model into VRAM) |
 | `judge` | `model` (`jev-latest`), `max_attempts` (default 5), `thresholds` (per dimension) |
-| `prompt` | `positive_prefix` / `negative_base`: fixed tags always added, such as quality tags and LoRA triggers. `ratings.sfw` / `ratings.nsfw`: positive / negative tags forced in when a content rating is chosen; if the model puts them on the opposite side they are removed, and the chosen rating is also passed to the prompt writer and to Jev |
+| `prompt` | `style`: default prompt style, `natural` (anima_baseV10 understands English sentences) or `tags`. `positive_prefix` / `negative_base`: fixed tags always added in front, in both styles, such as quality tags and LoRA triggers. `ratings.sfw` / `ratings.nsfw`: positive / negative tags forced in when a content rating is chosen; the chosen rating is also passed to the prompt writer and to Jev. In tag style, rating tags the model puts on the opposite side are removed; in natural style the text is left as written and Jev's `fidelity` / `negative` checks catch conflicts |
 | `generation` | Default generation parameters; `lora_strengths` is keyed by `lora_name` |
 | `runs_dir` | Local folder for run logs |
 | `ui` | `language`: default language of the WebUI and HTML reports (`en` / `zh-TW`, default `en`) |
@@ -114,7 +117,7 @@ Each prompt version is sent to Jev in one request that scores 4 Score dimensions
 | Dimension | What it checks |
 | --- | --- |
 | `fidelity` | Does the positive prompt faithfully depict the idea (and the image description, when there is a reference image)? |
-| `format` | English, comma-separated danbooru tags, with no sentences and no contradicting tags |
+| `format` | Tag style: English, comma-separated danbooru tags, with no sentences and no contradicting tags. Natural style: fluent, concrete English sentences after the fixed tag prefix, with no tag lists and no contradictions |
 | `completeness` | Are subject, appearance, pose / composition and scene / lighting all specified? |
 | `negative` | Is the negative prompt reasonable, without excluding anything the idea asks for? |
 

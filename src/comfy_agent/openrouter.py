@@ -1,4 +1,4 @@
-"""Turn an idea (text and/or image) into SD prompts via an LLM; OpenRouter backend.
+"""Turn an idea (text and/or image) into SD prompts (danbooru tags or natural language) via an LLM; OpenRouter backend.
 
 `PromptWriter` holds the provider-independent logic; backends implement `_chat` and `list_models`.
 """
@@ -17,7 +17,7 @@ import httpx
 
 from .config import RATING_DESCRIPTIONS
 
-SYSTEM_PROMPT = """You write prompts for an anime-style text-to-image model (Anima, danbooru-tag based).
+_TAGS_RULES = """You write prompts for an anime-style text-to-image model (Anima, danbooru-tag based).
 
 Given the user's idea (text and/or a reference image), reply with ONLY a JSON object:
 {
@@ -34,11 +34,34 @@ Rules for "positive":
 
 Rules for "negative":
 - English tags only, specific to this idea (e.g. unwanted extra subjects, wrong styles). Generic quality tags are added automatically.
-- Never exclude anything the idea asks for.
+- Never exclude anything the idea asks for."""
+
+_NATURAL_RULES = """You write prompts for an anime-style text-to-image model (Anima) that understands natural-language English descriptions.
+
+Given the user's idea (text and/or a reference image), reply with ONLY a JSON object:
+{
+  "positive": "<a natural-language English description of the image>",
+  "negative": "<a short natural-language English description of what to avoid>",
+  "image_description": "<one or two English sentences describing the reference image, or empty string if none>"
+}
+
+Rules for "positive":
+- Fluent English prose, about 2 to 5 sentences, like a detailed caption of the finished picture.
+- Describe, in this order: the subject(s) and how many -> appearance and clothing -> pose/action and expression -> composition/framing and camera angle -> background/scene -> lighting, colors and mood.
+- Be concrete and visual (e.g. "A girl with long silver hair and red eyes stands in a rainy street at night, ..."). No tag lists, no contradictions, no instructions to the model.
+- Do NOT write quality words such as masterpiece/best quality/score_N; quality tags are added automatically.
+
+Rules for "negative":
+- One or two plain English sentences or phrases naming what should NOT appear for this idea (e.g. "extra people in the background, a daytime sky, realistic photo style"). Generic quality/artifact tags are added automatically.
+- Never exclude anything the idea asks for."""
+
+_COMMON_TAIL = """
 
 If you will not write a prompt for this idea, reply with ONLY {"refused": true, "reason": "<short English reason>"} instead.
 
 Output the JSON object and nothing else."""
+
+SYSTEM_PROMPTS = {"tags": _TAGS_RULES + _COMMON_TAIL, "natural": _NATURAL_RULES + _COMMON_TAIL}
 
 
 class LLMError(RuntimeError):
@@ -174,6 +197,11 @@ def merge_tags(*parts: str) -> str:
     return ", ".join(out)
 
 
+def join_prose(tags: str, text: str) -> str:
+    """Put a fixed tag prefix in front of a natural-language prompt body."""
+    return ", ".join(p for p in (tags.strip(), " ".join(text.split())) if p)
+
+
 class PromptWriter:
     """Provider-independent prompt generation; subclasses talk to the actual API."""
 
@@ -194,6 +222,7 @@ class PromptWriter:
         history: list[Feedback] | None = None,
         max_parse_retries: int = 2,
         rating: str | None = None,
+        style: str = "tags",
     ) -> GeneratedPrompt:
         user_text = f"Idea:\n{idea.strip() or '(no text; use the reference image)'}"
         if rating:
@@ -216,7 +245,7 @@ class PromptWriter:
                 {"type": "image_url", "image_url": {"url": image_data_url}},
             ]
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPTS[style]},
             {"role": "user", "content": content},
         ]
 

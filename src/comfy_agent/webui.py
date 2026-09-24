@@ -15,6 +15,7 @@ from .config import (
     DIMENSIONS,
     ENDPOINT_ENV,
     JUDGE_MODES,
+    PROMPT_STYLES,
     PROVIDERS,
     Settings,
     endpoint_url,
@@ -39,6 +40,10 @@ def _provider_choices(lang: str) -> list[tuple[str, str]]:
 
 def _rating_choices(lang: str) -> list[tuple[str, str]]:
     return [(t("rating.none", lang), ""), ("SFW", "sfw"), ("NSFW", "nsfw")]
+
+
+def _style_choices(lang: str) -> list[tuple[str, str]]:
+    return [(t(f"style.{x}", lang), x) for x in PROMPT_STYLES]
 
 
 def _judge_choices(lang: str) -> list[tuple[str, str]]:
@@ -149,7 +154,7 @@ def build_app(settings: Settings) -> gr.Blocks:
         msg = f"{t('msg.saved_conn', lang)}\n\n{_check_endpoints(urls['comfyui'], urls['ollama'], lang)}"
         return msg, refresh_models(provider, image_path, current, lang)
 
-    def run(lang, idea, image_path, provider, model, rating, judge_mode, max_attempts, t_fid, t_fmt, t_comp, t_neg,
+    def run(lang, idea, image_path, provider, model, rating, style, judge_mode, max_attempts, t_fid, t_fmt, t_comp, t_neg,
             width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, loras_text):
         if not (idea or "").strip() and not image_path:
             raise gr.Error(t("msg.need_input", lang))
@@ -172,7 +177,7 @@ def build_app(settings: Settings) -> gr.Blocks:
             try:
                 pipeline = build_pipeline(s, provider)
                 args = (idea or "", model, image, gen, thresholds, int(max_attempts))
-                kwargs = dict(on_event=events.put, rating=rating or None)
+                kwargs = dict(on_event=events.put, rating=rating or None, style=style)
                 outcome["result"] = (
                     pipeline.compare(*args, **kwargs) if judge_mode == "ab"
                     else pipeline.run(*args, **kwargs, use_judge=judge_mode == "on")
@@ -265,6 +270,7 @@ def build_app(settings: Settings) -> gr.Blocks:
                     )
                     refresh = gr.Button("↻", scale=1, min_width=40)
                 rating = gr.Radio(_rating_choices(lang0), value="", label=L("ui.rating"))
+                style = gr.Radio(_style_choices(lang0), value=settings.prompt_style, label=L("ui.style"))
                 judge_mode = gr.Radio(_judge_choices(lang0), value="on", label=L("ui.judge"))
                 with gr.Accordion(L("ui.thresholds"), open=False) as acc_thr:
                     max_attempts = gr.Slider(1, 10, value=settings.max_attempts, step=1, label=L("ui.max_attempts"))
@@ -312,6 +318,7 @@ def build_app(settings: Settings) -> gr.Blocks:
             (provider, lambda x, p: gr.update(label=t("ui.provider", x), choices=_provider_choices(x))),
             (model, lambda x, p: gr.update(label=_model_label(p, x))),
             (rating, lambda x, p: gr.update(label=t("ui.rating", x), choices=_rating_choices(x))),
+            (style, lambda x, p: gr.update(label=t("ui.style", x), choices=_style_choices(x))),
             (judge_mode, lambda x, p: gr.update(label=t("ui.judge", x), choices=_judge_choices(x))),
             (acc_thr, lambda x, p: gr.update(label=t("ui.thresholds", x))),
             (max_attempts, lambda x, p: gr.update(label=t("ui.max_attempts", x))),
@@ -348,7 +355,7 @@ def build_app(settings: Settings) -> gr.Blocks:
         )
         go.click(
             run,
-            [lang, idea, image, provider, model, rating, judge_mode, max_attempts, *th, width, height, batch_size,
+            [lang, idea, image, provider, model, rating, style, judge_mode, max_attempts, *th, width, height, batch_size,
              seed, steps, cfg, sampler, scheduler, denoise, loras],
             [status, table, final_pos, final_neg, images, last_log],
         )

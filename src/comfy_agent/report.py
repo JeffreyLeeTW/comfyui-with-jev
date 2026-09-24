@@ -203,6 +203,7 @@ def build_report(log: dict, lang: str = "en") -> str:
         (t("report.model", lang), log.get("model")),
         (t("report.render", lang), log.get("mode")),
         (t("report.rating", lang), (log.get("rating") or "").upper() or t("rating.none", lang)),
+        (t("report.style", lang), t(f"style.{log.get('prompt_style') or 'tags'}", lang)),  # old logs: tags
         *[(k, gen.get(k)) for k in GEN_KEYS],
     ])
     thresholds = _chips(list((log.get("thresholds") or {}).items()))

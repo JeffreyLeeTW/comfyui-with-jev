@@ -19,7 +19,7 @@ def test_run_report(settings):
     assert path.parent == settings.runs_dir / "reports" and path.suffix == ".html"
     assert "&lt;b&gt;girl&lt;/b&gt;" in html and "<b>girl</b>" not in html  # escaped
     assert "http://x/view" in html and "Passed on attempt 2" in html and "SFW" in html
-    assert '<html lang="en">' in html
+    assert '<html lang="en">' in html and "Natural language" in html  # config default style
 
 
 def test_compare_report_has_both_arms_and_delta(settings):

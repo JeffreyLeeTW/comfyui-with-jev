@@ -9,6 +9,7 @@ from comfy_agent.openrouter import (
     OpenRouterClient,
     OpenRouterError,
     detect_refusal,
+    join_prose,
     merge_tags,
     remove_tags,
     parse_prompt_json,
@@ -68,6 +69,22 @@ def test_generate_sends_image_and_feedback_and_retries_bad_json():
     assert "fidelity: too vague" in user[0]["text"]
     assert route.calls[0].request.headers["authorization"] == "Bearer k"
     assert len(json.loads(route.calls[1].request.content)["messages"]) == 4
+
+
+@respx.mock
+def test_generate_uses_style_system_prompt():
+    route = respx.post(f"{BASE}/chat/completions")
+    route.respond(json=_reply('{"positive": "A girl.", "negative": "", "image_description": ""}'))
+    c = OpenRouterClient("k")
+    c.generate("m", "a girl", style="natural")
+    c.generate("m", "a girl")
+    systems = [json.loads(call.request.content)["messages"][0]["content"] for call in route.calls]
+    assert "natural-language English" in systems[0] and "danbooru-tag based" in systems[1]
+
+
+def test_join_prose():
+    assert join_prose("masterpiece, safe", " A girl\n smiles. ") == "masterpiece, safe, A girl smiles."
+    assert join_prose("", "A girl.") == "A girl." and join_prose("tags", "") == "tags"
 
 
 @respx.mock

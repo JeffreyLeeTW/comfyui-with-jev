@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 
 import typer
 
-from .config import JUDGE_MODES, PROVIDERS, RATINGS, load_settings
+from .config import JUDGE_MODES, PROMPT_STYLES, PROVIDERS, RATINGS, load_settings
 from .i18n import LANGS
 from .llm import default_model, make_writer, resolve_provider
 from .openrouter import ModelInfo
@@ -135,6 +135,7 @@ def run(
     provider: ProviderOpt = None,
     model: Annotated[Optional[str], typer.Option("--model", "-m", help="Model id for the provider; omit to pick interactively")] = None,
     rating: Annotated[Optional[str], typer.Option("--rating", help="sfw | nsfw; omit to add no rating tags")] = None,
+    style: Annotated[Optional[str], typer.Option("--style", help=f"Prompt style: {' | '.join(PROMPT_STYLES)}; default prompt.style")] = None,
     judge: Annotated[str, typer.Option("--judge", help="on = Jev loop | off = one draft, scored for reference | ab = both, same seed")] = "on",
     report: Annotated[bool, typer.Option("--report", help="Also export an HTML report")] = False,
     lang: LangOpt = None,
@@ -164,6 +165,9 @@ def run(
     rating = rating.lower() if rating else None
     if rating is not None and rating not in RATINGS:
         raise typer.BadParameter(f"--rating must be one of: {', '.join(RATINGS)}")
+    style = style.lower() if style else None
+    if style is not None and style not in PROMPT_STYLES:
+        raise typer.BadParameter(f"--style must be one of: {', '.join(PROMPT_STYLES)}")
     judge = judge.lower()
     if judge not in JUDGE_MODES:
         raise typer.BadParameter(f"--judge must be one of: {', '.join(JUDGE_MODES)}")
@@ -216,7 +220,7 @@ def run(
 
     pipeline = build_pipeline(s, provider)
     args = (idea, model, InputImage.from_path(image) if image else None, gen, thresholds, max_attempts)
-    kwargs = dict(render=not no_render, on_event=on_event, rating=rating)
+    kwargs = dict(render=not no_render, on_event=on_event, rating=rating, style=style)
     if judge == "ab":
         result = pipeline.compare(*args, **kwargs)
         arms = [("with Jev", result.with_jev), ("without Jev", result.without_jev)]

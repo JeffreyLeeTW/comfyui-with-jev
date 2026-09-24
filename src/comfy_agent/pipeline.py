@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import Callable
 
 from .comfyui import ComfyUIClient, OutputImage, build_workflow, load_workflow
-from .config import RATINGS, GenParams, RatingTags, Settings
+from .config import PROMPT_STYLES, RATINGS, GenParams, RatingTags, Settings
 from .judge import JevJudge, Verdict
 from .openrouter import (
     Feedback,
     ModelRefusal,
     PromptWriter,
     image_to_data_url,
+    join_prose,
     merge_tags,
     remove_tags,
 )
@@ -56,6 +57,7 @@ class RunResult:
     mode: str
     judge_mode: str = "on"  # "on" = Jev loop decided; "off" = first draft, score is reference only
     rating: str | None = None
+    style: str = "tags"
     attempts: list[Attempt] = field(default_factory=list)
     chosen: Attempt | None = None
     passed: bool = False
@@ -150,12 +152,13 @@ class Pipeline:
         on_event: EventHandler | None = None,
         rating: str | None = None,
         use_judge: bool = True,
+        style: str | None = None,
     ) -> RunResult:
-        emit, gen, thresholds, max_attempts = self._prepare(
-            idea, image, gen, thresholds, max_attempts, rating, on_event, need_judge=use_judge
+        emit, gen, thresholds, max_attempts, style = self._prepare(
+            idea, image, gen, thresholds, max_attempts, rating, style, on_event, need_judge=use_judge
         )
         result = self._write(
-            idea, model, image, rating, thresholds, max_attempts if use_judge else 1, use_judge, emit
+            idea, model, image, rating, style, thresholds, max_attempts if use_judge else 1, use_judge, emit
         )
         if render and not result.refused:
             self._render(result, self._upload(image, emit), gen, emit)
@@ -174,16 +177,17 @@ class Pipeline:
         render: bool = True,
         on_event: EventHandler | None = None,
         rating: str | None = None,
+        style: str | None = None,
     ) -> CompareResult:
         """A/B: Jev loop vs. no Jev. The no-Jev arm is the loop's first draft (what a
         no-Jev run would send), so both arms start from the same prompt and share one seed."""
-        emit, gen, thresholds, max_attempts = self._prepare(
-            idea, image, gen, thresholds, max_attempts, rating, on_event, need_judge=True
+        emit, gen, thresholds, max_attempts, style = self._prepare(
+            idea, image, gen, thresholds, max_attempts, rating, style, on_event, need_judge=True
         )
         if gen.seed < 0:
             gen = gen.override(seed=random.randint(0, 2**50))
 
-        a = self._write(idea, model, image, rating, thresholds, max_attempts, True, emit)
+        a = self._write(idea, model, image, rating, style, thresholds, max_attempts, True, emit)
         b = replace(a, judge_mode="off", attempts=a.attempts[:1], images=[])
         b.chosen = a.attempts[0] if a.attempts else None
         b.passed = bool(b.chosen and b.chosen.verdict and b.chosen.verdict.passed)
@@ -203,11 +207,14 @@ class Pipeline:
 
     # -- steps ----------------------------------------------------------------
 
-    def _prepare(self, idea, image, gen, thresholds, max_attempts, rating, on_event, need_judge: bool):
+    def _prepare(self, idea, image, gen, thresholds, max_attempts, rating, style, on_event, need_judge: bool):
         if not idea.strip() and image is None:
             raise ValueError("provide an idea text, an image, or both")
         if rating is not None and rating not in RATINGS:
             raise ValueError(f"rating must be one of {RATINGS} or None, got {rating!r}")
+        style = style or self.settings.prompt_style
+        if style not in PROMPT_STYLES:
+            raise ValueError(f"style must be one of {PROMPT_STYLES}, got {style!r}")
         if need_judge and self.judge is None:
             raise RuntimeError("Jev is required for this mode but TYPESAFE_API_KEY is not set")
         s = self.settings
@@ -216,17 +223,18 @@ class Pipeline:
             gen or s.gen,
             thresholds or s.thresholds,
             max_attempts or s.max_attempts,
+            style,
         )
 
     def _write(
-        self, idea: str, model: str, image: InputImage | None, rating: str | None,
+        self, idea: str, model: str, image: InputImage | None, rating: str | None, style: str,
         thresholds: dict[str, float], max_attempts: int, use_judge: bool, emit: EventHandler,
     ) -> RunResult:
         """Generate (and judge) prompts; no rendering, no log."""
         s = self.settings
         result = RunResult(
             idea=idea, provider=self.writer.name, model=model, mode="img2img" if image else "txt2img",
-            judge_mode="on" if use_judge else "off", rating=rating,
+            judge_mode="on" if use_judge else "off", rating=rating, style=style,
         )
         tags = s.ratings[rating] if rating else RatingTags()
         image_url = (
@@ -237,16 +245,15 @@ class Pipeline:
         for n in range(1, max_attempts + 1):
             emit({"type": "generating", "attempt": n, "max": max_attempts})
             try:
-                gp = self.writer.generate(model, idea, image_url, history, rating=rating)
+                gp = self.writer.generate(model, idea, image_url, history, rating=rating, style=style)
             except ModelRefusal as e:
                 self._refused(result, n, e.reason, emit)
                 return result
-            positive = merge_tags(s.positive_prefix, tags.positive, remove_tags(gp.positive, tags.negative))
-            negative = merge_tags(s.negative_base, tags.negative, remove_tags(gp.negative, tags.positive))
+            positive, negative = self._compose(gp.positive, gp.negative, tags, style)
 
             emit({"type": "judging", "attempt": n, "positive": positive, "negative": negative,
                   "reference": not use_judge})
-            verdict = self._judge(idea, gp.image_description, positive, negative, thresholds, rating,
+            verdict = self._judge(idea, gp.image_description, positive, negative, thresholds, rating, style,
                                   use_judge, emit)
             attempt = Attempt(n, positive, negative, gp.image_description, verdict)
             result.attempts.append(attempt)
@@ -265,16 +272,30 @@ class Pipeline:
         emit({"type": "chosen", "attempt": result.chosen, "passed": result.passed, "judge": use_judge})
         return result
 
-    def _judge(self, idea, image_description, positive, negative, thresholds, rating,
+    def _compose(self, positive: str, negative: str, tags: RatingTags, style: str) -> tuple[str, str]:
+        """Add the fixed prefix and rating tags. Only tag bodies can have conflicting rating tags stripped."""
+        s = self.settings
+        if style == "tags":
+            return (
+                merge_tags(s.positive_prefix, tags.positive, remove_tags(positive, tags.negative)),
+                merge_tags(s.negative_base, tags.negative, remove_tags(negative, tags.positive)),
+            )
+        return (
+            join_prose(merge_tags(s.positive_prefix, tags.positive), positive),
+            join_prose(merge_tags(s.negative_base, tags.negative), negative),
+        )
+
+    def _judge(self, idea, image_description, positive, negative, thresholds, rating, style,
                use_judge: bool, emit: EventHandler) -> Verdict | None:
+        args = (idea, image_description, positive, negative, thresholds, rating, style)
         if use_judge:
-            return self.judge.evaluate(idea, image_description, positive, negative, thresholds, rating)
+            return self.judge.evaluate(*args)
         # Reference score only: never let Jev problems block a no-Jev run.
         if self.judge is None:
             emit({"type": "warning", "message": "TYPESAFE_API_KEY not set; skipping reference score"})
             return None
         try:
-            return self.judge.evaluate(idea, image_description, positive, negative, thresholds, rating)
+            return self.judge.evaluate(*args)
         except Exception as e:
             emit({"type": "warning", "message": f"reference score failed: {type(e).__name__}: {e}"})
             return None
@@ -316,6 +337,7 @@ class Pipeline:
             "model": r.model,
             "mode": r.mode,
             "rating": r.rating,
+            "prompt_style": r.style,
             "thresholds": thresholds,
             "generation": asdict(gen),
         }

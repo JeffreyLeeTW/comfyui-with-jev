@@ -4,8 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from comfy_agent.config import PROJECT_ROOT, load_settings
-from comfy_agent.judge import QUESTIONS
+from comfy_agent.config import DIMENSIONS, PROJECT_ROOT, load_settings
 
 
 @pytest.fixture
@@ -33,7 +32,7 @@ class FakeSystemOne:
     def system_one(self, state, questions, *, model=None):
         self.requests.append((state, questions, model))
         answers = self.calls.pop(0)
-        assert set(answers) == set(QUESTIONS)
+        assert set(answers) == set(questions) == set(DIMENSIONS)
         return SimpleNamespace(scores={k: score_answer(v) for k, v in answers.items()})
 
 
@@ -43,4 +42,4 @@ MID = [0.0, 0.2, 0.6, 0.2]    # ~0.67
 
 
 def all_dims(probs):
-    return {d: probs for d in QUESTIONS}
+    return {d: probs for d in DIMENSIONS}

@@ -1,6 +1,6 @@
 from conftest import BAD, GOOD, MID, FakeSystemOne, all_dims
 
-from comfy_agent.judge import JevJudge
+from comfy_agent.judge import QUESTIONS, JevJudge
 
 TH = {"fidelity": 0.67, "format": 0.67, "completeness": 0.67, "negative": 0.67}
 
@@ -36,3 +36,11 @@ def test_threshold_is_respected():
     j = JevJudge(fake)
     assert j.evaluate("i", "", "p", "n", {k: 0.6 for k in TH}).passed
     assert not j.evaluate("i", "", "p", "n", {k: 0.7 for k in TH}).passed
+
+
+def test_natural_style_uses_its_own_questions_and_critique():
+    fake = FakeSystemOne([all_dims(GOOD) | {"format": BAD}])
+    v = JevJudge(fake).evaluate("idea", "", "masterpiece, A girl.", "lowres", TH, style="natural")
+    state, questions, _ = fake.requests[0]
+    assert "natural-language" in state["notes"] and questions is QUESTIONS["natural"]
+    assert "Clear, fluent English sentences" in v.critique()

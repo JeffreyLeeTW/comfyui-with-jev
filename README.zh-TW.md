@@ -60,6 +60,9 @@ uv run comfy-agent run --idea "..." --no-render
 # 指定內容分級（WebUI 用「內容分級」選項）：sfw 或 nsfw，不加就不指定
 uv run comfy-agent run --idea "..." --rating sfw
 
+# Prompt 風格（WebUI 用「Prompt 風格」選項）：natural（英文自然語言，預設）或 tags（danbooru tag）
+uv run comfy-agent run --idea "..." --style tags
+
 # Jev 模式：on（預設）／off（產生一次就生圖，Jev 只評分供參考）／ab（兩種各生一組、同 seed 對照）
 uv run comfy-agent run --idea "..." --judge ab --report
 
@@ -71,7 +74,7 @@ uv run comfy-agent report runs/20260924-120000.json --lang zh-TW
 
 | 類別 | 參數 |
 | --- | --- |
-| 模型／流程 | `--provider/-p`（`openrouter`／`ollama`）, `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`）, `--judge`（`on`／`off`／`ab`）, `--report`（另外匯出 HTML 報告）, `--lang`（報告語言：`en`／`zh-TW`） |
+| 模型／流程 | `--provider/-p`（`openrouter`／`ollama`）, `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`）, `--style`（`natural`／`tags`）, `--judge`（`on`／`off`／`ab`）, `--report`（另外匯出 HTML 報告）, `--lang`（報告語言：`en`／`zh-TW`） |
 | Jev 門檻（0–1） | `--t-fidelity`, `--t-format`, `--t-completeness`, `--t-negative` |
 | 生圖 | `--width`, `--height`, `--batch-size`, `--seed`（-1 = 隨機）, `--steps`, `--cfg`, `--sampler`, `--scheduler`, `--denoise`（只有 img2img 用得到） |
 | LoRA | `--lora name=strength`（可以重複指定多個） |
@@ -102,7 +105,7 @@ uv run comfy-agent webui --port 8000
 | `openrouter` | `default_model`（空白 = 每次執行時再選）、`temperature` |
 | `ollama` | `url`、`default_model`、`temperature`、`think`（thinking 模型要不要先思考，預設關掉以加快速度）、`timeout_s`（包含把模型載入 VRAM 的時間） |
 | `judge` | `model`（`jev-latest`）、`max_attempts`（預設 5）、`thresholds`（每個面向的門檻） |
-| `prompt` | `positive_prefix`／`negative_base`：每次都會自動加上的固定 tag，例如品質 tag 和 LoRA 觸發詞。`ratings.sfw`／`ratings.nsfw`：選擇內容分級時強制加入的 positive／negative tag；模型如果把這些 tag 寫在相反的一側會被移除，選擇的分級也會告訴生成模型和 Jev |
+| `prompt` | `style`：預設的 prompt 風格，`natural`（anima_baseV10 看得懂英文句子）或 `tags`。`positive_prefix`／`negative_base`：兩種風格都會自動加在最前面的固定 tag，例如品質 tag 和 LoRA 觸發詞。`ratings.sfw`／`ratings.nsfw`：選擇內容分級時強制加入的 positive／negative tag，選擇的分級也會告訴生成模型和 Jev。tag 風格下，模型寫在相反一側的分級 tag 會被移除；自然語言風格不改動句子，衝突交給 Jev 的 `fidelity`／`negative` 檢查 |
 | `generation` | 生圖參數預設值；`lora_strengths` 以 `lora_name` 為 key |
 | `runs_dir` | 本機存放執行紀錄的資料夾 |
 | `ui` | `language`：WebUI 和 HTML 報告的預設語言（`en`／`zh-TW`，預設 `en`） |
@@ -114,7 +117,7 @@ uv run comfy-agent webui --port 8000
 | 面向 | 評什麼 |
 | --- | --- |
 | `fidelity` | positive prompt 有沒有忠實呈現構想（有參考圖時，也對照圖片描述） |
-| `format` | 是不是英文、逗號分隔的 danbooru tag，沒有句子，也沒有互相矛盾的 tag |
+| `format` | tag 風格：是不是英文、逗號分隔的 danbooru tag，沒有句子，也沒有互相矛盾的 tag。自然語言風格：固定 tag 之後是不是通順、具體的英文句子，不是 tag 清單，也沒有矛盾 |
 | `completeness` | 主體、外觀、姿勢／構圖、場景／光線有沒有交代完整 |
 | `negative` | negative prompt 是否合理，有沒有排除掉構想要的東西 |
 

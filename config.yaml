@@ -34,12 +34,17 @@ judge:
     negative: 0.67
 
 prompt:
+  # Default prompt body style (WebUI radio / CLI --style override per run):
+  #   natural = English sentences, which Anima understands; tags = danbooru tags.
+  # The prefix, negative_base and rating tags below are added as tags in both styles.
+  style: natural
   # Always prepended to the generated positive prompt (quality tags, LoRA triggers...).
   positive_prefix: "masterpiece, best quality, score_7, score_8, score_9, year 2025, year 2026"
   # Always merged into the generated negative prompt.
   negative_base: "worst quality, low quality, score_1, score_2, score_3, score_4, score_5, score_6, artist name, blurry, jpeg artifacts, chromatic aberration, bad anatomy, bad hands, censored, mosaic censoring"
   # Content rating chosen per run (WebUI radio / CLI --rating); unset = add nothing.
-  # Tags here are forced in, and removed from the opposite side if the model wrote them there.
+  # Tags here are forced in. In tag style they are also removed from the opposite side if the
+  # model wrote them there; in natural style the writer and Jev are told the rating instead.
   ratings:
     sfw:
       positive: "safe"
