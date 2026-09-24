@@ -4,6 +4,8 @@
 
 構想（文字和/或圖片）→ **OpenRouter** 免費模型或本地 **Ollama** 產生 prompt → **Jev**（TypeSafe）評審 → **ComfyUI** 生圖。
 
+https://github.com/user-attachments/assets/52bff2b1-0903-404e-8181-81ee8bba78a5
+
 ```
 構想 (text / image)
       │
@@ -145,7 +147,7 @@ A-B 對照直接拿 Jev 迴圈的第 1 版當「無 Jev」組，兩組從同一�
 
 ## ComfyUI workflow
 
-Template 是 `workflows/anima_flow.json`，從 `example flow.json` 複製過來。程式會依節點的類型和連線找出要改的節點，不寫死節點 ID。每次執行時會做以下修改：
+Template 是 `workflows/anima_flow.json`。程式會依節點的類型和連線找出要改的節點，不寫死節點 ID。每次執行時會做以下修改：
 
 - **txt2img**（沒有參考圖）：KSampler 改接 `EmptyLatentImage`，denoise 設成 1.0；用不到的 LoadImage 那一串節點會被移除。
 - **img2img**（有參考圖）：把圖片上傳到 ComfyUI 的 `input/`，再走 `LoadImage → VAEEncode → LatentUpscale → KSampler`，使用你設定的 denoise。

@@ -4,6 +4,8 @@
 
 Idea (text and/or image) → a free **OpenRouter** model or a local **Ollama** model writes the prompt → **Jev** (TypeSafe) reviews it → **ComfyUI** renders the image.
 
+https://github.com/user-attachments/assets/52bff2b1-0903-404e-8181-81ee8bba78a5
+
 ```
 Idea (text / image)
       │
@@ -145,7 +147,7 @@ A/B compare uses the Jev loop's first draft as the "without Jev" arm, so both ar
 
 ## ComfyUI workflow
 
-The template is `workflows/anima_flow.json`, copied from `example flow.json`. Nodes are located by class type and connections, never by hard-coded IDs. On every run:
+The template is `workflows/anima_flow.json`. Nodes are located by class type and connections, never by hard-coded IDs. On every run:
 
 - **txt2img** (no reference image): KSampler is connected to `EmptyLatentImage` with denoise 1.0; the unused LoadImage chain is removed.
 - **img2img** (with a reference image): the image is uploaded to ComfyUI's `input/` and goes through `LoadImage → VAEEncode → LatentUpscale → KSampler` with your denoise.
