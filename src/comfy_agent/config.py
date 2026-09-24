@@ -12,6 +12,20 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DIMENSIONS = ("fidelity", "format", "completeness", "negative")
+RATINGS = ("sfw", "nsfw")
+# Told to both the prompt writer and Jev when a rating is chosen.
+RATING_DESCRIPTIONS = {
+    "sfw": "SFW: the image must be safe for work, with no nudity or sexual content, even if the idea hints at it",
+    "nsfw": "NSFW: the image is intended to be explicit adult content",
+}
+
+
+@dataclass(frozen=True)
+class RatingTags:
+    """Tags forced into the prompt for a content rating; the opposite side is stripped of them."""
+
+    positive: str = ""
+    negative: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +61,7 @@ class Settings:
     thresholds: dict[str, float]
     positive_prefix: str
     negative_base: str
+    ratings: dict[str, RatingTags]
     gen: GenParams
     runs_dir: Path
     openrouter_api_key: str
@@ -73,6 +88,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     gen = GenParams(**{k: v for k, v in gen_raw.items() if k in known and v is not None})
 
     thresholds = {d: 0.67 for d in DIMENSIONS} | (judge.get("thresholds") or {})
+    ratings_raw = prompt.get("ratings") or {}
+    ratings = {
+        r: RatingTags(str(t.get("positive") or ""), str(t.get("negative") or ""))
+        for r in RATINGS
+        for t in [ratings_raw.get(r) or {}]
+    }
 
     return Settings(
         comfyui_url=str(comfy.get("url", "http://10.0.0.15:8188")).rstrip("/"),
@@ -87,6 +108,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         thresholds={d: float(thresholds[d]) for d in DIMENSIONS},
         positive_prefix=prompt.get("positive_prefix", ""),
         negative_base=prompt.get("negative_base", ""),
+        ratings=ratings,
         gen=gen,
         runs_dir=_resolve(raw.get("runs_dir", "runs")),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),

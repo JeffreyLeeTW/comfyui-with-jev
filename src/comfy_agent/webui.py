@@ -12,10 +12,12 @@ from .comfyui import load_workflow
 from .config import DIMENSIONS, Settings
 from .openrouter import OpenRouterClient
 from .pipeline import InputImage, build_pipeline
+from .refusals import refusal_counts
 
 SAMPLERS = ["er_sde", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "uni_pc"]
 SCHEDULERS = ["beta", "normal", "karras", "exponential", "sgm_uniform", "simple"]
 TABLE_HEADERS = ["#", *DIMENSIONS, "result", "positive"]
+RATING_CHOICES = [("不指定", ""), ("SFW", "sfw"), ("NSFW", "nsfw")]
 
 
 def _workflow_loras(settings: Settings) -> str:
@@ -52,19 +54,22 @@ def _images_html(images) -> str:
 def build_app(settings: Settings) -> gr.Blocks:
     orc = OpenRouterClient(settings.openrouter_api_key, settings.openrouter_base_url, settings.openrouter_temperature)
 
-    def model_choices(need_vision: bool) -> list[str]:
+    def model_choices(need_vision: bool) -> list[tuple[str, str]]:
         try:
-            return [m.id for m in orc.list_free_models(need_vision=need_vision)]
+            found = orc.list_free_models(need_vision=need_vision)
         except Exception as e:
             gr.Warning(f"Could not list OpenRouter models: {e}")
             return []
+        refused = refusal_counts(settings.runs_dir)
+        return [(f"{m.id}  ⚠ 拒絕過 {refused[m.id]} 次" if refused[m.id] else m.id, m.id) for m in found]
 
     def refresh_models(image_path, current):
         choices = model_choices(image_path is not None)
-        value = current if current in choices else (choices[0] if choices else None)
+        ids = [v for _, v in choices]
+        value = current if current in ids else (ids[0] if ids else None)
         return gr.Dropdown(choices=choices, value=value)
 
-    def run(idea, image_path, model, max_attempts, t_fid, t_fmt, t_comp, t_neg,
+    def run(idea, image_path, model, rating, max_attempts, t_fid, t_fmt, t_comp, t_neg,
             width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, loras_text):
         if not (idea or "").strip() and not image_path:
             raise gr.Error("請輸入構想文字或上傳圖片（至少一項）")
@@ -86,7 +91,8 @@ def build_app(settings: Settings) -> gr.Blocks:
             try:
                 pipeline = build_pipeline(settings)
                 outcome["result"] = pipeline.run(
-                    idea or "", model, image, gen, thresholds, int(max_attempts), on_event=events.put
+                    idea or "", model, image, gen, thresholds, int(max_attempts),
+                    on_event=events.put, rating=rating or None,
                 )
             except Exception as e:
                 outcome["error"] = e
@@ -111,6 +117,11 @@ def build_app(settings: Settings) -> gr.Blocks:
                         + [f"{a.verdict.dimensions[d].value:.2f}" for d in DIMENSIONS]
                         + ["PASS" if a.verdict.passed else "FAIL", a.positive]
                     )
+                case "refused":
+                    status = (
+                        f"第 {e['attempt']} 次：{e['model']} 拒絕產生 prompt ⛔ 已停止，未生圖\n"
+                        f"原因：{e['reason']}"
+                    )
                 case "chosen":
                     a = e["attempt"]
                     pos, neg = a.positive, a.negative
@@ -127,6 +138,10 @@ def build_app(settings: Settings) -> gr.Blocks:
         if "error" in outcome:
             raise gr.Error(f"{type(outcome['error']).__name__}: {outcome['error']}")
         result = outcome["result"]
+        if result.refused:
+            status += f"\n已記錄到 {settings.runs_dir / 'refusals.jsonl'}\n紀錄：{result.log_path}"
+            yield status, rows, pos, neg, ""
+            return
         files = ", ".join(i.filename for i in result.images)
         status += f"\n完成：圖片存在 server output/（{files}）\n紀錄：{result.log_path}"
         yield status, rows, pos, neg, _images_html(result.images)
@@ -144,6 +159,7 @@ def build_app(settings: Settings) -> gr.Blocks:
                         allow_custom_value=True, scale=4,
                     )
                     refresh = gr.Button("↻", scale=1, min_width=40)
+                rating = gr.Radio(RATING_CHOICES, value="", label="內容分級（加入對應的 positive／negative tag）")
                 with gr.Accordion("Jev 門檻", open=False):
                     max_attempts = gr.Slider(1, 10, value=settings.max_attempts, step=1, label="最多嘗試次數")
                     t = [gr.Slider(0, 1, value=settings.thresholds[d], step=0.01, label=d) for d in DIMENSIONS]
@@ -174,7 +190,7 @@ def build_app(settings: Settings) -> gr.Blocks:
         app.load(refresh_models, [image, model], model)
         go.click(
             run,
-            [idea, image, model, max_attempts, *t, width, height, batch_size, seed, steps, cfg,
+            [idea, image, model, rating, max_attempts, *t, width, height, batch_size, seed, steps, cfg,
              sampler, scheduler, denoise, loras],
             [status, table, final_pos, final_neg, images],
         )

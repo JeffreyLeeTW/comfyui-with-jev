@@ -49,13 +49,16 @@ uv run comfy-agent run --idea "same girl at night" --image ref.png --model qwen/
 
 # 只產生 prompt 並評分，不送去生圖
 uv run comfy-agent run --idea "..." --no-render
+
+# 指定內容分級（WebUI 用「內容分級」選項）：sfw 或 nsfw，不加就不指定
+uv run comfy-agent run --idea "..." --rating sfw
 ```
 
 `run` 可以用的參數（沒有指定的就用 `config.yaml` 的值）：
 
 | 類別 | 參數 |
 | --- | --- |
-| 模型／流程 | `--model/-m`, `--max-attempts` |
+| 模型／流程 | `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`） |
 | Jev 門檻（0–1） | `--t-fidelity`, `--t-format`, `--t-completeness`, `--t-negative` |
 | 生圖 | `--width`, `--height`, `--batch-size`, `--seed`（-1 = 隨機）, `--steps`, `--cfg`, `--sampler`, `--scheduler`, `--denoise`（只有 img2img 用得到） |
 | LoRA | `--lora name=strength`（可以重複指定多個） |
@@ -79,7 +82,7 @@ uv run comfy-agent webui --port 8000
 | `comfyui` | `url`、`workflow`（API 格式的 workflow template）、`timeout_s` |
 | `openrouter` | `default_model`（空白 = 每次執行時再選）、`temperature` |
 | `judge` | `model`（`jev-latest`）、`max_attempts`（預設 5）、`thresholds`（每個面向的門檻） |
-| `prompt` | `positive_prefix`／`negative_base`：每次都會自動加上的固定 tag，例如品質 tag 和 LoRA 觸發詞 |
+| `prompt` | `positive_prefix`／`negative_base`：每次都會自動加上的固定 tag，例如品質 tag 和 LoRA 觸發詞。`ratings.sfw`／`ratings.nsfw`：選擇內容分級時強制加入的 positive／negative tag；模型如果把這些 tag 寫在相反的一側會被移除，選擇的分級也會告訴生成模型和 Jev |
 | `generation` | 生圖參數預設值；`lora_strengths` 以 `lora_name` 為 key |
 | `runs_dir` | 本機存放執行紀錄的資料夾 |
 
@@ -116,7 +119,8 @@ Template 是 `workflows/anima_flow.json`，從 `example flow.json` 複製過來�
 ## 輸出
 
 - **圖片**：只存在 server 的 `output/`，不會下載到本機。CLI 會印出 `/view` 連結，WebUI 則直接顯示。
-- **紀錄**：`runs/<時間>.json`，內容包括每一輪的 prompt、各面向的分數／信心值／等級、最後選用的是第幾輪、是否達標、生圖參數、seed 和 ComfyUI 的 prompt_id。
+- **紀錄**：`runs/<時間>.json`，內容包括每一輪的 prompt、各面向的分數／信心值／等級、最後選用的是第幾輪、是否達標、生圖參數、seed 和 ComfyUI 的 prompt_id。模型拒絕時會多一個 `refused` 欄位記錄原因。
+- **拒絕紀錄**：`runs/refusals.jsonl`，每行一筆（時間、模型、txt2img／img2img、第幾輪、原因、構想）。`models` 指令和 WebUI 的模型選單會標出拒絕過幾次。
 
 ## 專案結構
 
@@ -147,5 +151,6 @@ uv run pytest
 | `check` 顯示 ComfyUI 失敗 | 確認 VPN 已連線，並且 `config.yaml` 的 `comfyui.url` 正確 |
 | OpenRouter 回應 429 或 503 | 免費模型常被限流，程式會自動重試幾次；還是不行就換一個模型 |
 | `Model did not return valid prompt JSON` | 這個模型不太會照格式輸出 JSON，換一個模型 |
+| `refused ... stopping (nothing rendered)` | 模型拒絕產生 prompt（它自己回報拒絕、供應商的內容過濾擋下，或回覆中出現常見的拒絕句型）。整個流程會立刻停止、不生圖，並記錄到 `runs/refusals.jsonl`。換一個模型 |
 | ComfyUI rejected the workflow | 錯誤訊息會附上 node_errors，通常是 server 上缺少模型或 LoRA 檔案，或是 sampler、scheduler 名稱打錯 |
 | 每次都不及格 | 查看 `runs/` 裡是哪個面向偏低，再調整門檻或 `judge.py` 裡的評分標準 |

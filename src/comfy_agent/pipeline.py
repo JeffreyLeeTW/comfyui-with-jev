@@ -10,9 +10,17 @@ from pathlib import Path
 from typing import Callable
 
 from .comfyui import ComfyUIClient, OutputImage, build_workflow, load_workflow
-from .config import GenParams, Settings
+from .config import RATINGS, GenParams, RatingTags, Settings
 from .judge import JevJudge, Verdict
-from .openrouter import Feedback, OpenRouterClient, image_to_data_url, merge_tags
+from .openrouter import (
+    Feedback,
+    ModelRefusal,
+    OpenRouterClient,
+    image_to_data_url,
+    merge_tags,
+    remove_tags,
+)
+from .refusals import Refusal, record_refusal
 
 
 @dataclass(frozen=True)
@@ -40,9 +48,11 @@ class RunResult:
     idea: str
     model: str
     mode: str
+    rating: str | None = None
     attempts: list[Attempt] = field(default_factory=list)
     chosen: Attempt | None = None
     passed: bool = False
+    refused: str | None = None
     seed: int | None = None
     prompt_id: str | None = None
     images: list[OutputImage] = field(default_factory=list)
@@ -76,16 +86,20 @@ class Pipeline:
         max_attempts: int | None = None,
         render: bool = True,
         on_event: EventHandler | None = None,
+        rating: str | None = None,
     ) -> RunResult:
         if not idea.strip() and image is None:
             raise ValueError("provide an idea text, an image, or both")
+        if rating is not None and rating not in RATINGS:
+            raise ValueError(f"rating must be one of {RATINGS} or None, got {rating!r}")
         emit = on_event or (lambda _e: None)
         s = self.settings
         gen = gen or s.gen
         thresholds = thresholds or s.thresholds
         max_attempts = max_attempts or s.max_attempts
 
-        result = RunResult(idea=idea, model=model, mode="img2img" if image else "txt2img")
+        result = RunResult(idea=idea, model=model, mode="img2img" if image else "txt2img", rating=rating)
+        tags = s.ratings[rating] if rating else RatingTags()
         image_url = (
             image_to_data_url(image.data, mimetypes.guess_type(image.filename)[0]) if image else None
         )
@@ -93,12 +107,15 @@ class Pipeline:
 
         for n in range(1, max_attempts + 1):
             emit({"type": "generating", "attempt": n, "max": max_attempts})
-            gp = self.openrouter.generate(model, idea, image_url, history)
-            positive = merge_tags(s.positive_prefix, gp.positive)
-            negative = merge_tags(s.negative_base, gp.negative)
+            try:
+                gp = self.openrouter.generate(model, idea, image_url, history, rating=rating)
+            except ModelRefusal as e:
+                return self._refused(result, n, e.reason, gen, thresholds, emit)
+            positive = merge_tags(s.positive_prefix, tags.positive, remove_tags(gp.positive, tags.negative))
+            negative = merge_tags(s.negative_base, tags.negative, remove_tags(gp.negative, tags.positive))
 
             emit({"type": "judging", "attempt": n, "positive": positive, "negative": negative})
-            verdict = self.judge.evaluate(idea, gp.image_description, positive, negative, thresholds)
+            verdict = self.judge.evaluate(idea, gp.image_description, positive, negative, thresholds, rating)
             attempt = Attempt(n, positive, negative, gp.image_description, verdict)
             result.attempts.append(attempt)
             emit({"type": "judged", "attempt": attempt})
@@ -134,6 +151,20 @@ class Pipeline:
         emit({"type": "done", "result": result})
         return result
 
+    def _refused(
+        self, result: RunResult, attempt: int, reason: str,
+        gen: GenParams, thresholds: dict[str, float], emit: EventHandler,
+    ) -> RunResult:
+        """Stop the whole run (no render) and remember which model refused."""
+        result.refused = reason
+        record_refusal(
+            self.settings.runs_dir, Refusal(result.model, result.mode, attempt, reason, result.idea)
+        )
+        emit({"type": "refused", "attempt": attempt, "model": result.model, "reason": reason})
+        result.log_path = self._save_log(result, gen, thresholds)
+        emit({"type": "done", "result": result})
+        return result
+
     def _save_log(self, result: RunResult, gen: GenParams, thresholds: dict[str, float]) -> Path:
         self.settings.runs_dir.mkdir(parents=True, exist_ok=True)
         path = self.settings.runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}.json"
@@ -141,7 +172,9 @@ class Pipeline:
             "idea": result.idea,
             "model": result.model,
             "mode": result.mode,
+            "rating": result.rating,
             "passed": result.passed,
+            "refused": result.refused,
             "chosen_attempt": result.chosen.number if result.chosen else None,
             "thresholds": thresholds,
             "generation": asdict(gen) | {"seed": result.seed},

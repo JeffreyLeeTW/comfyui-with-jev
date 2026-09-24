@@ -7,8 +7,9 @@ from typing import Annotated, Optional
 
 import typer
 
-from .config import load_settings
+from .config import RATINGS, load_settings
 from .openrouter import FreeModel, OpenRouterClient
+from .refusals import refusal_counts
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 
@@ -21,9 +22,11 @@ def _openrouter(settings) -> OpenRouterClient:
     )
 
 
-def _print_models(models: list[FreeModel]) -> None:
+def _print_models(models: list[FreeModel], refused: dict[str, int]) -> None:
     for i, m in enumerate(models, 1):
         tag = " [vision]" if m.vision else ""
+        if n := refused.get(m.id):
+            tag += f" [refused {n}x]"
         typer.echo(f"{i:3d}. {m.id}{tag}  ({m.context_length:,} ctx)")
 
 
@@ -33,8 +36,9 @@ def models(
     config: ConfigOpt = None,
 ) -> None:
     """List free OpenRouter models."""
-    found = _openrouter(load_settings(config)).list_free_models(need_vision=vision)
-    _print_models(found)
+    s = load_settings(config)
+    found = _openrouter(s).list_free_models(need_vision=vision)
+    _print_models(found, refusal_counts(s.runs_dir))
     typer.echo(f"\n{len(found)} free model(s)")
 
 
@@ -82,7 +86,7 @@ def _choose_model(s, need_vision: bool) -> str:
     found = _openrouter(s).list_free_models(need_vision=need_vision)
     if not found:
         raise typer.BadParameter("no free OpenRouter models available" + (" with vision" if need_vision else ""))
-    _print_models(found)
+    _print_models(found, refusal_counts(s.runs_dir))
     idx = typer.prompt("Pick a model number", type=int)
     if not 1 <= idx <= len(found):
         raise typer.BadParameter(f"choose 1..{len(found)}")
@@ -106,6 +110,7 @@ def run(
     idea: Annotated[str, typer.Option("--idea", "-i", help="Idea text (English or any language)")] = "",
     image: Annotated[Optional[Path], typer.Option("--image", help="Reference image -> img2img", exists=True, dir_okay=False)] = None,
     model: Annotated[Optional[str], typer.Option("--model", "-m", help="OpenRouter model id; omit to pick interactively")] = None,
+    rating: Annotated[Optional[str], typer.Option("--rating", help="sfw | nsfw; omit to add no rating tags")] = None,
     max_attempts: Annotated[Optional[int], typer.Option("--max-attempts")] = None,
     t_fidelity: Annotated[Optional[float], typer.Option("--t-fidelity", help="Threshold 0..1")] = None,
     t_format: Annotated[Optional[float], typer.Option("--t-format")] = None,
@@ -129,6 +134,9 @@ def run(
 
     if not idea.strip() and image is None:
         raise typer.BadParameter("give --idea, --image, or both")
+    rating = rating.lower() if rating else None
+    if rating is not None and rating not in RATINGS:
+        raise typer.BadParameter(f"--rating must be one of: {', '.join(RATINGS)}")
     s = load_settings(config)
     model = model or s.openrouter_default_model or _choose_model(s, need_vision=image is not None)
 
@@ -155,6 +163,9 @@ def run(
                         fg="green" if d.passed else "red",
                     )
                 typer.secho("  PASS" if v.passed else "  FAIL -> feedback sent back", fg="green" if v.passed else "yellow")
+            case "refused":
+                typer.secho(f"\n{e['model']} refused on attempt {e['attempt']}; stopping (nothing rendered).", fg="red", bold=True)
+                typer.secho(f"  reason: {e['reason']}", fg="red")
             case "chosen":
                 if not e["passed"]:
                     typer.secho(
@@ -166,12 +177,15 @@ def run(
 
     result = build_pipeline(s).run(
         idea, model, InputImage.from_path(image) if image else None, gen, thresholds,
-        max_attempts, render=not no_render, on_event=on_event,
+        max_attempts, render=not no_render, on_event=on_event, rating=rating,
     )
     for img in result.images:
         typer.secho(f"image on server: output/{img.subfolder + '/' if img.subfolder else ''}{img.filename}", fg="cyan")
         typer.echo(f"  view: {img.url}")
     typer.echo(f"log: {result.log_path}")
+    if result.refused:
+        typer.echo(f"refusal recorded in {s.runs_dir / 'refusals.jsonl'}")
+        raise typer.Exit(1)
 
 
 @app.command()

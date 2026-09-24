@@ -12,6 +12,8 @@ from pathlib import Path
 
 import httpx
 
+from .config import RATING_DESCRIPTIONS
+
 SYSTEM_PROMPT = """You write prompts for an anime-style text-to-image model (Anima, danbooru-tag based).
 
 Given the user's idea (text and/or a reference image), reply with ONLY a JSON object:
@@ -31,11 +33,22 @@ Rules for "negative":
 - English tags only, specific to this idea (e.g. unwanted extra subjects, wrong styles). Generic quality tags are added automatically.
 - Never exclude anything the idea asks for.
 
+If you will not write a prompt for this idea, reply with ONLY {"refused": true, "reason": "<short English reason>"} instead.
+
 Output the JSON object and nothing else."""
 
 
 class OpenRouterError(RuntimeError):
     pass
+
+
+class ModelRefusal(OpenRouterError):
+    """The model declined to write a prompt; retrying the same model is pointless."""
+
+    def __init__(self, model: str, reason: str):
+        super().__init__(f"{model} refused: {reason}")
+        self.model = model
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,51 @@ def parse_prompt_json(text: str) -> dict:
     return data
 
 
+_REFUSAL_RE = re.compile(
+    r"\bI(?:'m| am)? (?:sorry|unable to)\b"
+    r"|\bI (?:can(?:'|no)t|won't|will not|must decline)"
+    r" (?:help|assist|create|generate|write|provide|produce|comply|fulfill|do that|make)"
+    r"|\bnot able to (?:help|assist|create|generate|write|provide)"
+    r"|\bagainst (?:my|the|our) (?:guidelines|polic(?:y|ies)|content polic(?:y|ies))",
+    re.I,
+)
+
+
+def _json_object(text: str) -> dict | None:
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def detect_refusal(text: str, finish_reason: str | None = None) -> str | None:
+    """Return a refusal reason, or None if the reply is not a refusal.
+
+    Checks, in order: provider content filter, the explicit {"refused": true} signal,
+    then refusal phrases, but only when the reply has no usable prompt JSON.
+    """
+    if finish_reason == "content_filter":
+        return "blocked by provider content filter"
+    data = _json_object(text)
+    if data and data.get("refused") is True:
+        return str(data.get("reason") or "no reason given").strip()
+    if data and str(data.get("positive", "")).strip():
+        return None
+    if _REFUSAL_RE.search(text):
+        return " ".join(text.split())[:300]
+    return None
+
+
+def remove_tags(tags: str, banned: str) -> str:
+    """Drop every tag listed in `banned` (case-insensitive) from a tag string."""
+    drop = {t.lower() for t in merge_tags(banned).split(", ") if t}
+    return ", ".join(t for t in merge_tags(tags).split(", ") if t and t.lower() not in drop)
+
+
 def merge_tags(*parts: str) -> str:
     """Join comma-separated tag strings, dropping empty and duplicate (case-insensitive) tags."""
     seen: set[str] = set()
@@ -153,7 +211,7 @@ class OpenRouterClient:
             )
         return sorted(models, key=lambda fm: fm.id)
 
-    def _chat(self, model: str, messages: list[dict]) -> str:
+    def _chat(self, model: str, messages: list[dict]) -> tuple[str, str | None]:
         body = {"model": model, "messages": messages, "temperature": self.temperature}
         for attempt in range(self.max_http_retries + 1):
             resp = self.http.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
@@ -168,8 +226,9 @@ class OpenRouterClient:
             if "error" in data:
                 raise OpenRouterError(f"OpenRouter error: {data['error']}")
             try:
-                return data["choices"][0]["message"]["content"] or ""
-            except (KeyError, IndexError) as e:
+                choice = data["choices"][0]
+                return choice["message"].get("content") or "", choice.get("finish_reason")
+            except (KeyError, IndexError, AttributeError) as e:
                 raise OpenRouterError(f"Unexpected OpenRouter response: {str(data)[:500]}") from e
         raise OpenRouterError("OpenRouter retries exhausted")
 
@@ -180,8 +239,11 @@ class OpenRouterClient:
         image_data_url: str | None = None,
         history: list[Feedback] | None = None,
         max_parse_retries: int = 2,
+        rating: str | None = None,
     ) -> GeneratedPrompt:
         user_text = f"Idea:\n{idea.strip() or '(no text; use the reference image)'}"
+        if rating:
+            user_text += f"\n\nContent rating: {RATING_DESCRIPTIONS[rating]}."
         if image_data_url:
             user_text += "\n\nA reference image is attached."
         for i, fb in enumerate(history or [], 1):
@@ -206,7 +268,9 @@ class OpenRouterClient:
 
         last_err: Exception | None = None
         for _ in range(max_parse_retries + 1):
-            raw = self._chat(model, messages)
+            raw, finish_reason = self._chat(model, messages)
+            if reason := detect_refusal(raw, finish_reason):
+                raise ModelRefusal(model, reason)
             try:
                 data = parse_prompt_json(raw)
             except (ValueError, json.JSONDecodeError) as e:

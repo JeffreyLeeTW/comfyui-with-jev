@@ -4,18 +4,23 @@ from conftest import BAD, GOOD, MID, FakeSystemOne, all_dims
 
 from comfy_agent.comfyui import OutputImage
 from comfy_agent.judge import JevJudge
-from comfy_agent.openrouter import GeneratedPrompt
+from comfy_agent.openrouter import GeneratedPrompt, ModelRefusal
 from comfy_agent.pipeline import InputImage, Pipeline
 
 
 class FakeOpenRouter:
-    def __init__(self):
+    def __init__(self, refuse_on: int | None = None):
         self.calls = []
+        self.refuse_on = refuse_on
+        self.ratings = []
 
-    def generate(self, model, idea, image_url, history):
+    def generate(self, model, idea, image_url, history, rating=None):
         self.calls.append((model, idea, image_url, list(history)))
+        self.ratings.append(rating)
         n = len(self.calls)
-        return GeneratedPrompt(f"tag{n}, 1girl", f"neg{n}", "desc" if image_url else "", "{}")
+        if n == self.refuse_on:
+            raise ModelRefusal(model, "explicit content")
+        return GeneratedPrompt(f"tag{n}, 1girl, Nude", f"neg{n}, safe", "desc" if image_url else "", "{}")
 
 
 class FakeComfy:
@@ -80,3 +85,47 @@ def test_no_render(settings):
     p, _, comfy = make(settings, [all_dims(GOOD)])
     r = p.run("x", "m", render=False)
     assert r.passed and not comfy.queued and r.images == []
+
+
+def test_refusal_stops_run_without_render_and_is_recorded(settings):
+    from comfy_agent.refusals import refusal_counts
+
+    orc, comfy = FakeOpenRouter(refuse_on=2), FakeComfy()
+    p = Pipeline(settings, orc, JevJudge(FakeSystemOne([all_dims(BAD)])), comfy)
+    events = []
+    r = p.run("a girl", "m:free", max_attempts=5, on_event=events.append)
+
+    assert r.refused == "explicit content" and not r.passed and r.chosen is None
+    assert len(orc.calls) == 2 and len(r.attempts) == 1 and comfy.queued == []
+    assert [e["type"] for e in events][-2:] == ["refused", "done"]
+    assert json.loads(r.log_path.read_text())["refused"] == "explicit content"
+
+    entry = json.loads((settings.runs_dir / "refusals.jsonl").read_text().splitlines()[0])
+    assert entry["model"] == "m:free" and entry["attempt"] == 2 and entry["mode"] == "txt2img"
+    assert refusal_counts(settings.runs_dir) == {"m:free": 1}
+
+
+def test_sfw_rating_forces_tags_and_strips_conflicts(settings):
+    fake = FakeSystemOne([all_dims(GOOD)])
+    orc, comfy = FakeOpenRouter(), FakeComfy()
+    r = Pipeline(settings, orc, JevJudge(fake), comfy).run("a girl", "m:free", rating="sfw")
+
+    a = r.chosen
+    assert orc.ratings == ["sfw"] and r.rating == "sfw"
+    assert "safe" in a.positive.split(", ") and "nude" not in a.positive.lower()
+    assert {"nsfw", "explicit", "nude"} <= set(a.negative.split(", ")) and "safe" not in a.negative.split(", ")
+    assert fake.requests[0][0]["content_rating"].startswith("SFW")
+    assert json.loads(r.log_path.read_text())["rating"] == "sfw"
+
+
+def test_nsfw_rating_and_unset_rating(settings):
+    fake = FakeSystemOne([all_dims(GOOD), all_dims(GOOD)])
+    orc, comfy = FakeOpenRouter(), FakeComfy()
+    p = Pipeline(settings, orc, JevJudge(fake), comfy)
+
+    r = p.run("a girl", "m:free", rating="nsfw")
+    assert set(r.chosen.positive.split(", ")) >= {"nsfw", "explicit", "Nude"}
+
+    r = p.run("a girl", "m:free")
+    assert "nsfw" not in r.chosen.positive and "safe" in r.chosen.negative  # untouched
+    assert "not specified" in fake.requests[1][0]["content_rating"]

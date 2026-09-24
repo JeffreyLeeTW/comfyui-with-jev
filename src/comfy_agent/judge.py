@@ -7,13 +7,15 @@ from typing import Any, Protocol
 
 from typesafe_sdk import Score
 
-from .config import DIMENSIONS
+from .config import DIMENSIONS, RATING_DESCRIPTIONS
 
 QUESTIONS: dict[str, Score] = {
     "fidelity": Score(
         instructions=(
             "How faithfully does `positive_prompt` depict what the user asked for in `idea` "
-            "(and in `image_description`, when present)? Ignore the fixed quality tags described in `notes`."
+            "(and in `image_description`, when present), within the limits of `content_rating`? "
+            "Content that `content_rating` forbids counts as contradicting the idea. "
+            "Ignore the fixed quality and rating tags described in `notes`."
         ),
         criteria=[
             "Unrelated or contradicts the idea: the main subject or intent is missing or wrong",
@@ -49,7 +51,8 @@ QUESTIONS: dict[str, Score] = {
     "negative": Score(
         instructions=(
             "How appropriate is `negative_prompt` for this `idea`? It should list English tags for unwanted "
-            "artifacts or content and must NOT exclude anything the idea asks for."
+            "artifacts or content and must NOT exclude anything the idea asks for. "
+            "Excluding content that `content_rating` forbids is correct, not harmful."
         ),
         criteria=[
             "Harmful: it excludes something the idea explicitly wants, or it is not a tag list",
@@ -62,7 +65,8 @@ QUESTIONS: dict[str, Score] = {
 
 STATE_NOTES = (
     "`positive_prompt` always starts with fixed quality tags (masterpiece, best quality, score_N, year N); "
-    "they are expected and should not count against the prompt."
+    "they are expected and should not count against the prompt. When `content_rating` is set, "
+    "matching rating tags (such as safe, nsfw, explicit) are added automatically as well."
 )
 
 
@@ -109,10 +113,13 @@ class Verdict:
         return "\n".join(lines) or "All dimensions passed."
 
 
-def build_state(idea: str, image_description: str, positive: str, negative: str) -> dict:
+def build_state(
+    idea: str, image_description: str, positive: str, negative: str, rating: str | None = None
+) -> dict:
     return {
         "idea": idea.strip() or "(no text idea; see image_description)",
         "image_description": image_description or "(no reference image)",
+        "content_rating": RATING_DESCRIPTIONS[rating] if rating else "(not specified; follow the idea)",
         "positive_prompt": positive,
         "negative_prompt": negative,
         "notes": STATE_NOTES,
@@ -131,8 +138,9 @@ class JevJudge:
         positive: str,
         negative: str,
         thresholds: dict[str, float],
+        rating: str | None = None,
     ) -> Verdict:
-        state = build_state(idea, image_description, positive, negative)
+        state = build_state(idea, image_description, positive, negative, rating)
         resp = self.client.system_one(state, QUESTIONS, model=self.model)
         dims = {}
         for name in DIMENSIONS:

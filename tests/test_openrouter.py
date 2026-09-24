@@ -5,9 +5,12 @@ import respx
 
 from comfy_agent.openrouter import (
     Feedback,
+    ModelRefusal,
     OpenRouterClient,
     OpenRouterError,
+    detect_refusal,
     merge_tags,
+    remove_tags,
     parse_prompt_json,
 )
 
@@ -77,3 +80,48 @@ def test_generate_raises_on_http_error():
 def test_missing_key_raises():
     with pytest.raises(OpenRouterError, match="OPENROUTER_API_KEY"):
         OpenRouterClient("").generate("m", "idea")
+
+
+def test_detect_refusal_signals():
+    assert detect_refusal('{"refused": true, "reason": "explicit content"}') == "explicit content"
+    assert detect_refusal("", "content_filter") == "blocked by provider content filter"
+    assert "can't help" in detect_refusal("I'm sorry, but I can't help with that request.")
+    assert detect_refusal("That goes against my guidelines.")
+    # A usable prompt wins over polite chatter; plain format errors are not refusals.
+    assert detect_refusal('Sorry for the delay! {"positive": "1girl"}') is None
+    assert detect_refusal("I'm sorry, here it is: {\"positive\": \"1girl\"}") is None
+    assert detect_refusal("I cannot format that") is None
+    assert detect_refusal("no json here") is None
+
+
+@respx.mock
+def test_generate_raises_model_refusal_without_retrying():
+    route = respx.post(f"{BASE}/chat/completions")
+    route.respond(json=_reply("I'm sorry, but I can't create that content."))
+    with pytest.raises(ModelRefusal) as e:
+        OpenRouterClient("k").generate("m:free", "idea")
+    assert e.value.model == "m:free" and "can't create" in e.value.reason
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_generate_detects_refusal_after_bad_json_retry():
+    route = respx.post(f"{BASE}/chat/completions")
+    route.side_effect = [
+        respx.MockResponse(200, json=_reply("I cannot format that")),
+        respx.MockResponse(200, json={"choices": [{"message": {"content": None}, "finish_reason": "content_filter"}]}),
+    ]
+    with pytest.raises(ModelRefusal, match="content filter"):
+        OpenRouterClient("k").generate("m:free", "idea")
+
+
+def test_remove_tags_case_insensitive():
+    assert remove_tags("1girl, Nude, sex, solo", "nude, SEX") == "1girl, solo"
+    assert remove_tags("1girl", "") == "1girl"
+
+
+@respx.mock
+def test_generate_tells_model_the_rating():
+    route = respx.post(f"{BASE}/chat/completions").respond(json=_reply('{"positive": "1girl"}'))
+    OpenRouterClient("k").generate("m:free", "a girl", rating="sfw")
+    assert "Content rating: SFW" in json.loads(route.calls[0].request.content)["messages"][1]["content"]

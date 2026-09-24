@@ -27,6 +27,15 @@ prompt:
   positive_prefix: "masterpiece, best quality, score_7, score_8, score_9, year 2025, year 2026"
   # Always merged into the generated negative prompt.
   negative_base: "worst quality, low quality, score_1, score_2, score_3, score_4, score_5, score_6, artist name, blurry, jpeg artifacts, chromatic aberration, bad anatomy, bad hands, censored, mosaic censoring"
+  # Content rating chosen per run (WebUI radio / CLI --rating); unset = add nothing.
+  # Tags here are forced in, and removed from the opposite side if the model wrote them there.
+  ratings:
+    sfw:
+      positive: "safe"
+      negative: "nsfw, explicit, nude, nipples, pussy, penis, sex"
+    nsfw:
+      positive: "nsfw, explicit"
+      negative: ""
 
 generation:
   width: 832
