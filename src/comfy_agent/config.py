@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DIMENSIONS = ("fidelity", "format", "completeness", "negative")
 RATINGS = ("sfw", "nsfw")
+PROVIDERS = ("openrouter", "ollama")
 # Told to both the prompt writer and Jev when a rating is chosen.
 RATING_DESCRIPTIONS = {
     "sfw": "SFW: the image must be safe for work, with no nudity or sexual content, even if the idea hints at it",
@@ -53,9 +54,15 @@ class Settings:
     workflow_path: Path
     comfyui_timeout_s: float
     comfyui_poll_interval_s: float
+    llm_provider: str
     openrouter_base_url: str
     openrouter_default_model: str
     openrouter_temperature: float
+    ollama_url: str
+    ollama_default_model: str
+    ollama_temperature: float
+    ollama_think: bool
+    ollama_timeout_s: float
     judge_model: str
     max_attempts: int
     thresholds: dict[str, float]
@@ -79,7 +86,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     comfy = raw.get("comfyui", {})
+    llm = raw.get("llm", {})
     orr = raw.get("openrouter", {})
+    oll = raw.get("ollama", {})
     judge = raw.get("judge", {})
     prompt = raw.get("prompt", {})
     gen_raw = raw.get("generation", {})
@@ -87,6 +96,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     known = {f.name for f in fields(GenParams)}
     gen = GenParams(**{k: v for k, v in gen_raw.items() if k in known and v is not None})
 
+    provider = str(llm.get("provider", "openrouter")).lower()
+    if provider not in PROVIDERS:
+        raise ValueError(f"llm.provider must be one of {PROVIDERS}, got {provider!r}")
     thresholds = {d: 0.67 for d in DIMENSIONS} | (judge.get("thresholds") or {})
     ratings_raw = prompt.get("ratings") or {}
     ratings = {
@@ -100,9 +112,15 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         workflow_path=_resolve(comfy.get("workflow", "workflows/anima_flow.json")),
         comfyui_timeout_s=float(comfy.get("timeout_s", 600)),
         comfyui_poll_interval_s=float(comfy.get("poll_interval_s", 2)),
+        llm_provider=provider,
         openrouter_base_url=str(orr.get("base_url", "https://openrouter.ai/api/v1")).rstrip("/"),
         openrouter_default_model=orr.get("default_model") or "",
         openrouter_temperature=float(orr.get("temperature", 0.8)),
+        ollama_url=str(oll.get("url", "http://10.0.0.15:11434")).rstrip("/"),
+        ollama_default_model=oll.get("default_model") or "",
+        ollama_temperature=float(oll.get("temperature", 0.8)),
+        ollama_think=bool(oll.get("think", False)),
+        ollama_timeout_s=float(oll.get("timeout_s", 600)),
         judge_model=judge.get("model", "jev-latest"),
         max_attempts=int(judge.get("max_attempts", 5)),
         thresholds={d: float(thresholds[d]) for d in DIMENSIONS},

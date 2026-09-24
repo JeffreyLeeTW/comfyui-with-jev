@@ -9,6 +9,8 @@ from comfy_agent.pipeline import InputImage, Pipeline
 
 
 class FakeOpenRouter:
+    name = "fake"
+
     def __init__(self, refuse_on: int | None = None):
         self.calls = []
         self.refuse_on = refuse_on
@@ -57,6 +59,7 @@ def test_passes_on_second_attempt_and_feeds_back_critique(settings):
     assert wf["4"]["inputs"]["latent_image"] == ["3", 0]  # txt2img
     log = json.loads(r.log_path.read_text())
     assert log["passed"] and log["chosen_attempt"] == 2 and len(log["attempts"]) == 2
+    assert log["provider"] == "fake"
 
 
 def test_after_max_attempts_sends_best_marked_not_passed(settings):
@@ -102,6 +105,7 @@ def test_refusal_stops_run_without_render_and_is_recorded(settings):
 
     entry = json.loads((settings.runs_dir / "refusals.jsonl").read_text().splitlines()[0])
     assert entry["model"] == "m:free" and entry["attempt"] == 2 and entry["mode"] == "txt2img"
+    assert entry["provider"] == "fake"
     assert refusal_counts(settings.runs_dir) == {"m:free": 1}
 
 

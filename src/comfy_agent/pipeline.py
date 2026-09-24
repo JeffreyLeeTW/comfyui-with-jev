@@ -15,7 +15,7 @@ from .judge import JevJudge, Verdict
 from .openrouter import (
     Feedback,
     ModelRefusal,
-    OpenRouterClient,
+    PromptWriter,
     image_to_data_url,
     merge_tags,
     remove_tags,
@@ -46,6 +46,7 @@ class Attempt:
 @dataclass
 class RunResult:
     idea: str
+    provider: str
     model: str
     mode: str
     rating: str | None = None
@@ -67,12 +68,12 @@ class Pipeline:
     def __init__(
         self,
         settings: Settings,
-        openrouter: OpenRouterClient,
+        writer: PromptWriter,
         judge: JevJudge,
         comfy: ComfyUIClient,
     ):
         self.settings = settings
-        self.openrouter = openrouter
+        self.writer = writer
         self.judge = judge
         self.comfy = comfy
 
@@ -98,7 +99,7 @@ class Pipeline:
         thresholds = thresholds or s.thresholds
         max_attempts = max_attempts or s.max_attempts
 
-        result = RunResult(idea=idea, model=model, mode="img2img" if image else "txt2img", rating=rating)
+        result = RunResult(idea=idea, provider=self.writer.name, model=model, mode="img2img" if image else "txt2img", rating=rating)
         tags = s.ratings[rating] if rating else RatingTags()
         image_url = (
             image_to_data_url(image.data, mimetypes.guess_type(image.filename)[0]) if image else None
@@ -108,7 +109,7 @@ class Pipeline:
         for n in range(1, max_attempts + 1):
             emit({"type": "generating", "attempt": n, "max": max_attempts})
             try:
-                gp = self.openrouter.generate(model, idea, image_url, history, rating=rating)
+                gp = self.writer.generate(model, idea, image_url, history, rating=rating)
             except ModelRefusal as e:
                 return self._refused(result, n, e.reason, gen, thresholds, emit)
             positive = merge_tags(s.positive_prefix, tags.positive, remove_tags(gp.positive, tags.negative))
@@ -158,7 +159,7 @@ class Pipeline:
         """Stop the whole run (no render) and remember which model refused."""
         result.refused = reason
         record_refusal(
-            self.settings.runs_dir, Refusal(result.model, result.mode, attempt, reason, result.idea)
+            self.settings.runs_dir, Refusal(result.model, result.mode, attempt, reason, result.idea, result.provider)
         )
         emit({"type": "refused", "attempt": attempt, "model": result.model, "reason": reason})
         result.log_path = self._save_log(result, gen, thresholds)
@@ -170,6 +171,7 @@ class Pipeline:
         path = self.settings.runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}.json"
         data = {
             "idea": result.idea,
+            "provider": result.provider,
             "model": result.model,
             "mode": result.mode,
             "rating": result.rating,
@@ -199,16 +201,13 @@ class Pipeline:
         return path
 
 
-def build_pipeline(settings: Settings) -> Pipeline:
+def build_pipeline(settings: Settings, provider: str | None = None) -> Pipeline:
     from .judge import make_typesafe_client
+    from .llm import make_writer
 
     return Pipeline(
         settings,
-        OpenRouterClient(
-            settings.openrouter_api_key,
-            settings.openrouter_base_url,
-            settings.openrouter_temperature,
-        ),
+        make_writer(settings, provider),
         JevJudge(make_typesafe_client(settings.typesafe_api_key), settings.judge_model),
         ComfyUIClient(settings.comfyui_url),
     )

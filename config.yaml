@@ -7,10 +7,21 @@ comfyui:
   timeout_s: 600          # max wait for one generation
   poll_interval_s: 2
 
+llm:
+  # Who writes the prompts: openrouter | ollama (WebUI dropdown / CLI --provider override per run).
+  provider: openrouter
+
 openrouter:
   base_url: https://openrouter.ai/api/v1
   default_model: ""       # empty = choose each run (CLI prompts, WebUI dropdown)
   temperature: 0.8
+
+ollama:
+  url: http://10.0.0.15:11434
+  default_model: ""       # empty = choose each run
+  temperature: 0.8
+  think: false            # thinking models reason first when true (much slower)
+  timeout_s: 600          # includes loading the model into VRAM
 
 judge:
   model: jev-latest

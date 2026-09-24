@@ -1,12 +1,12 @@
 # comfy-agent
 
-構想（文字和/或圖片）→ **OpenRouter** 免費模型產生 prompt → **Jev**（TypeSafe）評審 → **ComfyUI** 生圖。
+構想（文字和/或圖片）→ **OpenRouter** 免費模型或本地 **Ollama** 產生 prompt → **Jev**（TypeSafe）評審 → **ComfyUI** 生圖。
 
 ```
 構想 (text / image)
       │
       ▼
-OpenRouter 產生 positive / negative prompt ◄──────┐
+LLM 產生 positive / negative prompt ◄─────────────┐
       │                                           │ 不及格：帶著 Jev 的評語重寫
       ▼                                           │（最多 max_attempts 次）
 Jev 用 4 個面向評分 ── 任一面向低於門檻 ──────────────┘
@@ -21,6 +21,7 @@ ComfyUI：有圖片走 img2img，沒有圖片走 txt2img → 圖片存到 server
 - Python ≥ 3.12，使用 [uv](https://docs.astral.sh/uv/) 管理環境
 - 本機要能連到 ComfyUI server（預設 `http://10.0.0.15:8188`，需要 VPN）
 - API key：[OpenRouter](https://openrouter.ai/keys)、[TypeSafe](https://console.typesafe.ai/)
+- 選用：[Ollama](https://ollama.com/) server（預設 `http://10.0.0.15:11434`），可以取代 OpenRouter，不需要 API key
 
 ## 安裝
 
@@ -30,18 +31,22 @@ cp .env.example .env   # 填入 OPENROUTER_API_KEY、TYPESAFE_API_KEY
 uv run comfy-agent check
 ```
 
-`check` 會分別測試 ComfyUI、OpenRouter 和 TypeSafe 的連線，三項都要顯示 `[ok]`。
+`check` 會分別測試 ComfyUI、OpenRouter、Ollama 和 TypeSafe 的連線。你實際會用到的服務都要顯示 `[ok]`；只用其中一個 provider 的話，另一個顯示失敗沒關係。
 
 ## 使用方式
 
 ### CLI
 
 ```bash
-# 列出免費模型（--vision 只列出能看圖的模型）
+# 列出模型（--vision 只列出能看圖的模型；--provider/-p 選 openrouter 或 ollama，預設看 config.yaml）
 uv run comfy-agent models
 uv run comfy-agent models --vision
+uv run comfy-agent models -p ollama
 
-# 純文字 → txt2img（沒給 --model 時，會列出免費模型讓你選）
+# 改用本地 Ollama 產生 prompt
+uv run comfy-agent run --idea "..." -p ollama --model gemma4:e4b
+
+# 純文字 → txt2img（沒給 --model 時，會列出模型讓你選）
 uv run comfy-agent run --idea "a girl reading under cherry blossoms"
 
 # 文字 + 參考圖 → img2img
@@ -58,7 +63,7 @@ uv run comfy-agent run --idea "..." --rating sfw
 
 | 類別 | 參數 |
 | --- | --- |
-| 模型／流程 | `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`） |
+| 模型／流程 | `--provider/-p`（`openrouter`／`ollama`）, `--model/-m`, `--max-attempts`, `--rating`（`sfw`／`nsfw`） |
 | Jev 門檻（0–1） | `--t-fidelity`, `--t-format`, `--t-completeness`, `--t-negative` |
 | 生圖 | `--width`, `--height`, `--batch-size`, `--seed`（-1 = 隨機）, `--steps`, `--cfg`, `--sampler`, `--scheduler`, `--denoise`（只有 img2img 用得到） |
 | LoRA | `--lora name=strength`（可以重複指定多個） |
@@ -71,6 +76,7 @@ uv run comfy-agent webui            # http://127.0.0.1:7860
 uv run comfy-agent webui --port 8000
 ```
 
+- 「Prompt 產生器」可以切換 OpenRouter／Ollama，模型清單會跟著更新。
 - 模型下拉選單會依有沒有上傳圖片，自動只列出能看圖的模型；↻ 可以重新整理清單。
 - 「Jev 門檻」和「生圖參數」兩個折疊區塊，可以調整每次執行的設定。
 - 右側會即時顯示每一輪的分數、最後送出的 prompt，以及直接從 server 讀取的結果圖。
@@ -80,7 +86,9 @@ uv run comfy-agent webui --port 8000
 | 區塊 | 重點 |
 | --- | --- |
 | `comfyui` | `url`、`workflow`（API 格式的 workflow template）、`timeout_s` |
+| `llm` | `provider`：預設用哪個產生 prompt（`openrouter`／`ollama`），每次執行時都可以改 |
 | `openrouter` | `default_model`（空白 = 每次執行時再選）、`temperature` |
+| `ollama` | `url`、`default_model`、`temperature`、`think`（thinking 模型要不要先思考，預設關掉以加快速度）、`timeout_s`（包含把模型載入 VRAM 的時間） |
 | `judge` | `model`（`jev-latest`）、`max_attempts`（預設 5）、`thresholds`（每個面向的門檻） |
 | `prompt` | `positive_prefix`／`negative_base`：每次都會自動加上的固定 tag，例如品質 tag 和 LoRA 觸發詞。`ratings.sfw`／`ratings.nsfw`：選擇內容分級時強制加入的 positive／negative tag；模型如果把這些 tag 寫在相反的一側會被移除，選擇的分級也會告訴生成模型和 Jev |
 | `generation` | 生圖參數預設值；`lora_strengths` 以 `lora_name` 為 key |
@@ -98,9 +106,9 @@ uv run comfy-agent webui --port 8000
 | `negative` | negative prompt 是否合理，有沒有排除掉構想要的東西 |
 
 - **及格**：4 個面向都達到各自的門檻（預設都是 0.67）。
-- **不及格**：把沒過的面向、分數和 Jev 判斷的等級寫成評語，連同上一版 prompt 一起交給 OpenRouter 重寫。
+- **不及格**：把沒過的面向、分數和 Jev 判斷的等級寫成評語，連同上一版 prompt 一起交給 LLM 重寫。
 - **次數用完**：比較每一版最弱的那個面向，挑這個分數最高的一版送出，並標記為「未達標」。
-- Jev 只吃文字。有參考圖時，會先由 OpenRouter 產生一段圖片描述，交給 Jev 當判斷依據。
+- Jev 只吃文字。有參考圖時，會先由 LLM 產生一段圖片描述，交給 Jev 當判斷依據。
 - 評分題目和各等級的描述定義在 `src/comfy_agent/judge.py` 的 `QUESTIONS`。
 
 > 門檻的預設值只是起點。建議先跑幾次，看 `runs/` 裡的實際分數分布再調整。
@@ -129,7 +137,10 @@ config.yaml               預設設定
 workflows/anima_flow.json ComfyUI API workflow template
 src/comfy_agent/
   config.py      讀取 config.yaml 和 .env
-  openrouter.py  列出免費模型、產生 prompt（支援圖片輸入）
+  openrouter.py  共用的 prompt 產生邏輯（PromptWriter）與 OpenRouter 後端
+  ollama.py      Ollama 後端（原生 /api/chat，可關掉 thinking）
+  llm.py         依 provider 建立對應的後端
+  refusals.py    模型拒絕紀錄
   judge.py       Jev 評分題目、及格判定、評語
   comfyui.py     修改 workflow、上傳圖片、送出並等待生圖
   pipeline.py    生成 → 評審 → 生圖的主流程，並寫出執行紀錄

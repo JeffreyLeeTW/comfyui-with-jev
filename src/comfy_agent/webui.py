@@ -9,8 +9,8 @@ import threading
 import gradio as gr
 
 from .comfyui import load_workflow
-from .config import DIMENSIONS, Settings
-from .openrouter import OpenRouterClient
+from .config import DIMENSIONS, PROVIDERS, Settings
+from .llm import PROVIDER_LABELS, default_model, make_writer
 from .pipeline import InputImage, build_pipeline
 from .refusals import refusal_counts
 
@@ -52,29 +52,30 @@ def _images_html(images) -> str:
 
 
 def build_app(settings: Settings) -> gr.Blocks:
-    orc = OpenRouterClient(settings.openrouter_api_key, settings.openrouter_base_url, settings.openrouter_temperature)
+    writers = {p: make_writer(settings, p) for p in PROVIDERS}
 
-    def model_choices(need_vision: bool) -> list[tuple[str, str]]:
+    def model_choices(provider: str, need_vision: bool) -> list[tuple[str, str]]:
         try:
-            found = orc.list_free_models(need_vision=need_vision)
+            found = writers[provider].list_models(need_vision=need_vision)
         except Exception as e:
-            gr.Warning(f"Could not list OpenRouter models: {e}")
+            gr.Warning(f"Could not list {provider} models: {e}")
             return []
         refused = refusal_counts(settings.runs_dir)
         return [(f"{m.id}  ⚠ 拒絕過 {refused[m.id]} 次" if refused[m.id] else m.id, m.id) for m in found]
 
-    def refresh_models(image_path, current):
-        choices = model_choices(image_path is not None)
+    def refresh_models(provider, image_path, current):
+        choices = model_choices(provider, image_path is not None)
         ids = [v for _, v in choices]
-        value = current if current in ids else (ids[0] if ids else None)
-        return gr.Dropdown(choices=choices, value=value)
+        preferred = [m for m in (current, default_model(settings, provider)) if m in ids]
+        value = preferred[0] if preferred else (ids[0] if ids else None)
+        return gr.Dropdown(choices=choices, value=value, label=f"{PROVIDER_LABELS[provider]} 模型")
 
-    def run(idea, image_path, model, rating, max_attempts, t_fid, t_fmt, t_comp, t_neg,
+    def run(idea, image_path, provider, model, rating, max_attempts, t_fid, t_fmt, t_comp, t_neg,
             width, height, batch_size, seed, steps, cfg, sampler, scheduler, denoise, loras_text):
         if not (idea or "").strip() and not image_path:
             raise gr.Error("請輸入構想文字或上傳圖片（至少一項）")
         if not model:
-            raise gr.Error("請選擇 OpenRouter 模型")
+            raise gr.Error("請選擇模型")
 
         gen = settings.gen.override(
             width=int(width), height=int(height), batch_size=int(batch_size), seed=int(seed),
@@ -89,7 +90,7 @@ def build_app(settings: Settings) -> gr.Blocks:
 
         def worker():
             try:
-                pipeline = build_pipeline(settings)
+                pipeline = build_pipeline(settings, provider)
                 outcome["result"] = pipeline.run(
                     idea or "", model, image, gen, thresholds, int(max_attempts),
                     on_event=events.put, rating=rating or None,
@@ -107,7 +108,7 @@ def build_app(settings: Settings) -> gr.Blocks:
         while (e := events.get()) is not None:
             match e["type"]:
                 case "generating":
-                    status = f"第 {e['attempt']}/{e['max']} 次：OpenRouter 產生 prompt 中…"
+                    status = f"第 {e['attempt']}/{e['max']} 次：{provider} 產生 prompt 中…"
                 case "judging":
                     status = f"第 {e['attempt']} 次：Jev 評分中…"
                 case "judged":
@@ -148,15 +149,18 @@ def build_app(settings: Settings) -> gr.Blocks:
 
     g = settings.gen
     with gr.Blocks(title="ComfyUI Prompt Agent") as app:
-        gr.Markdown("## ComfyUI Prompt Agent\n構想 → OpenRouter 產生 prompt → Jev 評審（不及格退回重寫）→ ComfyUI 生圖")
+        gr.Markdown("## ComfyUI Prompt Agent\n構想 → OpenRouter／Ollama 產生 prompt → Jev 評審（不及格退回重寫）→ ComfyUI 生圖")
         with gr.Row():
             with gr.Column(scale=1):
                 idea = gr.Textbox(label="構想", lines=4, placeholder="描述你想要的畫面（可搭配參考圖）")
                 image = gr.Image(label="參考圖（有圖 → img2img）", type="filepath")
+                provider = gr.Radio(
+                    [(PROVIDER_LABELS[p], p) for p in PROVIDERS], value=settings.llm_provider, label="Prompt 產生器",
+                )
                 with gr.Row():
                     model = gr.Dropdown(
-                        label="OpenRouter 免費模型", choices=[], value=settings.openrouter_default_model or None,
-                        allow_custom_value=True, scale=4,
+                        label=f"{PROVIDER_LABELS[settings.llm_provider]} 模型", choices=[],
+                        value=default_model(settings) or None, allow_custom_value=True, scale=4,
                     )
                     refresh = gr.Button("↻", scale=1, min_width=40)
                 rating = gr.Radio(RATING_CHOICES, value="", label="內容分級（加入對應的 positive／negative tag）")
@@ -185,12 +189,13 @@ def build_app(settings: Settings) -> gr.Blocks:
                 final_neg = gr.Textbox(label="送出的 negative prompt", lines=2, interactive=False)
                 images = gr.HTML(label="結果（從 server 讀取）")
 
-        refresh.click(refresh_models, [image, model], model)
-        image.change(refresh_models, [image, model], model)
-        app.load(refresh_models, [image, model], model)
+        refresh.click(refresh_models, [provider, image, model], model)
+        image.change(refresh_models, [provider, image, model], model)
+        provider.change(refresh_models, [provider, image, model], model)
+        app.load(refresh_models, [provider, image, model], model)
         go.click(
             run,
-            [idea, image, model, rating, max_attempts, *t, width, height, batch_size, seed, steps, cfg,
+            [idea, image, provider, model, rating, max_attempts, *t, width, height, batch_size, seed, steps, cfg,
              sampler, scheduler, denoise, loras],
             [status, table, final_pos, final_neg, images],
         )

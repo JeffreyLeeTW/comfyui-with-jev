@@ -7,22 +7,27 @@ from typing import Annotated, Optional
 
 import typer
 
-from .config import RATINGS, load_settings
-from .openrouter import FreeModel, OpenRouterClient
+from .config import PROVIDERS, RATINGS, load_settings
+from .llm import default_model, make_writer, resolve_provider
+from .openrouter import ModelInfo
 from .refusals import refusal_counts
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 
 ConfigOpt = Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml")]
+ProviderOpt = Annotated[
+    Optional[str], typer.Option("--provider", "-p", help=f"{' | '.join(PROVIDERS)}; default from config.yaml")
+]
 
 
-def _openrouter(settings) -> OpenRouterClient:
-    return OpenRouterClient(
-        settings.openrouter_api_key, settings.openrouter_base_url, settings.openrouter_temperature
-    )
+def _provider(settings, provider: str | None) -> str:
+    try:
+        return resolve_provider(settings, provider)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
-def _print_models(models: list[FreeModel], refused: dict[str, int]) -> None:
+def _print_models(models: list[ModelInfo], refused: dict[str, int]) -> None:
     for i, m in enumerate(models, 1):
         tag = " [vision]" if m.vision else ""
         if n := refused.get(m.id):
@@ -33,18 +38,20 @@ def _print_models(models: list[FreeModel], refused: dict[str, int]) -> None:
 @app.command()
 def models(
     vision: Annotated[bool, typer.Option("--vision", help="Only models that accept images")] = False,
+    provider: ProviderOpt = None,
     config: ConfigOpt = None,
 ) -> None:
-    """List free OpenRouter models."""
+    """List models: free ones on OpenRouter, or those installed in Ollama."""
     s = load_settings(config)
-    found = _openrouter(s).list_free_models(need_vision=vision)
+    provider = _provider(s, provider)
+    found = make_writer(s, provider).list_models(need_vision=vision)
     _print_models(found, refusal_counts(s.runs_dir))
-    typer.echo(f"\n{len(found)} free model(s)")
+    typer.echo(f"\n{len(found)} {provider} model(s)")
 
 
 @app.command()
 def check(config: ConfigOpt = None) -> None:
-    """Check connectivity to ComfyUI, OpenRouter and TypeSafe."""
+    """Check connectivity to ComfyUI, OpenRouter, Ollama and TypeSafe."""
     from .comfyui import ComfyUIClient
     from .judge import make_typesafe_client
 
@@ -67,7 +74,13 @@ def check(config: ConfigOpt = None) -> None:
     def openrouter() -> str:
         if not s.openrouter_api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not set")
-        return f"{len(_openrouter(s).list_free_models())} free models listed"
+        return f"{len(make_writer(s, 'openrouter').list_models())} free models listed"
+
+    def ollama() -> str:
+        from .ollama import OllamaClient
+
+        client = OllamaClient(s.ollama_url, timeout_s=10)
+        return f"{s.ollama_url} v{client.version()} ({len(client.list_models())} chat models)"
 
     def typesafe() -> str:
         from typesafe_sdk import Noul
@@ -78,14 +91,15 @@ def check(config: ConfigOpt = None) -> None:
 
     report("ComfyUI", comfy)
     report("OpenRouter", openrouter)
+    report("Ollama", ollama)
     report("TypeSafe/Jev", typesafe)
     raise typer.Exit(0 if ok else 1)
 
 
-def _choose_model(s, need_vision: bool) -> str:
-    found = _openrouter(s).list_free_models(need_vision=need_vision)
+def _choose_model(s, provider: str, need_vision: bool) -> str:
+    found = make_writer(s, provider).list_models(need_vision=need_vision)
     if not found:
-        raise typer.BadParameter("no free OpenRouter models available" + (" with vision" if need_vision else ""))
+        raise typer.BadParameter(f"no {provider} models available" + (" with vision" if need_vision else ""))
     _print_models(found, refusal_counts(s.runs_dir))
     idx = typer.prompt("Pick a model number", type=int)
     if not 1 <= idx <= len(found):
@@ -109,7 +123,8 @@ def _parse_loras(values: list[str] | None) -> dict[str, float] | None:
 def run(
     idea: Annotated[str, typer.Option("--idea", "-i", help="Idea text (English or any language)")] = "",
     image: Annotated[Optional[Path], typer.Option("--image", help="Reference image -> img2img", exists=True, dir_okay=False)] = None,
-    model: Annotated[Optional[str], typer.Option("--model", "-m", help="OpenRouter model id; omit to pick interactively")] = None,
+    provider: ProviderOpt = None,
+    model: Annotated[Optional[str], typer.Option("--model", "-m", help="Model id for the provider; omit to pick interactively")] = None,
     rating: Annotated[Optional[str], typer.Option("--rating", help="sfw | nsfw; omit to add no rating tags")] = None,
     max_attempts: Annotated[Optional[int], typer.Option("--max-attempts")] = None,
     t_fidelity: Annotated[Optional[float], typer.Option("--t-fidelity", help="Threshold 0..1")] = None,
@@ -129,7 +144,7 @@ def run(
     no_render: Annotated[bool, typer.Option("--no-render", help="Only generate and judge prompts")] = False,
     config: ConfigOpt = None,
 ) -> None:
-    """Idea -> OpenRouter prompt -> Jev judge (retry) -> ComfyUI."""
+    """Idea -> LLM prompt (OpenRouter/Ollama) -> Jev judge (retry) -> ComfyUI."""
     from .pipeline import InputImage, build_pipeline
 
     if not idea.strip() and image is None:
@@ -138,7 +153,8 @@ def run(
     if rating is not None and rating not in RATINGS:
         raise typer.BadParameter(f"--rating must be one of: {', '.join(RATINGS)}")
     s = load_settings(config)
-    model = model or s.openrouter_default_model or _choose_model(s, need_vision=image is not None)
+    provider = _provider(s, provider)
+    model = model or default_model(s, provider) or _choose_model(s, provider, need_vision=image is not None)
 
     loras = _parse_loras(lora)
     gen = s.gen.override(
@@ -152,7 +168,7 @@ def run(
     def on_event(e: dict) -> None:
         match e["type"]:
             case "generating":
-                typer.secho(f"\n== Attempt {e['attempt']}/{e['max']}: generating with {model}", bold=True)
+                typer.secho(f"\n== Attempt {e['attempt']}/{e['max']}: generating with {provider}/{model}", bold=True)
             case "judging":
                 typer.echo(f"positive: {e['positive']}\nnegative: {e['negative']}")
             case "judged":
@@ -175,7 +191,7 @@ def run(
             case "rendering":
                 typer.echo(f"\nQueued in ComfyUI: prompt_id={e['prompt_id']} seed={e['seed']} - waiting...")
 
-    result = build_pipeline(s).run(
+    result = build_pipeline(s, provider).run(
         idea, model, InputImage.from_path(image) if image else None, gen, thresholds,
         max_attempts, render=not no_render, on_event=on_event, rating=rating,
     )

@@ -18,6 +18,7 @@ class Refusal:
     attempt: int
     reason: str
     idea: str
+    provider: str = ""
     time: str = ""
 
 
